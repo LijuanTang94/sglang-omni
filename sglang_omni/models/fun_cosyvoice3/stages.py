@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Sequence, cast
@@ -269,6 +270,7 @@ class FunCosyVoice3Flow:
 
     def __init__(self, flow: Any) -> None:
         self._flow = flow
+        self._last_solve: tuple[int, Any, Any] | None = None
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._flow, name)
@@ -284,10 +286,38 @@ class FunCosyVoice3Flow:
         self._flow.eval()
         return self
 
+    def log_last_solve(self) -> None:
+        # note (db-ol): the vocoder calls this once the bucket's audio reached
+        # the host, so the end event has completed and nothing waits here.
+        if self._last_solve is None:
+            return
+        items, start, end = self._last_solve
+        if isinstance(end, float):
+            elapsed_ms = (end - start) * 1000.0
+        else:
+            end.synchronize()
+            elapsed_ms = start.elapsed_time(end)
+        logger.info(
+            "Fun-CosyVoice3 flow solve: batch_items=%d solve_elapsed_ms=%.1f",
+            items,
+            elapsed_ms,
+        )
+
     @torch.inference_mode()
     def inference(self, inputs: Sequence[FlowBatchInput]) -> list[torch.Tensor]:
         packed = _pack_flow_inputs(self._flow, inputs)
-        generated = _generate_flow(self._flow, packed)
+        device = packed.embedding.device
+        if device.type == "cuda":
+            stream = torch.cuda.current_stream(device)
+            start, end = (torch.cuda.Event(enable_timing=True) for _ in range(2))
+            start.record(stream)
+            generated = _generate_flow(self._flow, packed)
+            end.record(stream)
+        else:
+            start = time.perf_counter()
+            generated = _generate_flow(self._flow, packed)
+            end = time.perf_counter()
+        self._last_solve = (len(inputs), start, end)
         outputs: list[torch.Tensor] = []
         for index, prompt_frames in enumerate(packed.prompt_mel_lengths):
             mel = generated[
@@ -523,6 +553,7 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
                         self._mel2wav(mel),
                         request.sample_rate,
                     )
+            self._flow.log_last_solve()
 
         if any(result is None for result in results):
             raise RuntimeError("Fun-CosyVoice3 vocoder did not decode every request")
