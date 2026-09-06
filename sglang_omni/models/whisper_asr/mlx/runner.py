@@ -58,10 +58,12 @@ def _declared_cache_layout():
 class WhisperMlxModelRunner:
     """Whisper support layered on SGLang's native MLX model runner.
 
-    The base runner keeps ownership of pool sizing, request bookkeeping and
-    batched decode. This mixin supplies the model, the encoder-decoder cache
-    shape, and the audio prefill; decode steps need no override because
-    ``WhisperMlxModel.__call__`` decodes from tokens and a populated cache.
+    The base runner keeps ownership of pool sizing and request bookkeeping.
+    This mixin supplies the model, the encoder-decoder cache shape, the audio
+    prefill, and single-request decode: the batched decode path reads
+    ``caches[i][layer].offset`` straight off the layer entry, which here is a
+    ``CacheList`` pair, and its shared KV pool has no room for the
+    cross-attention half.
     """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -99,6 +101,25 @@ class WhisperMlxModelRunner:
         """
         return self.model.make_cache()
 
+    def _first_attention_cache(self, cache: list[Any]) -> Any:
+        """Point offset bookkeeping at the self-attention half.
+
+        The base runner reads ``.offset`` off the layer's cache entry to learn
+        how many tokens are committed. Here that entry is the ``CacheList``
+        pair, and only its self-attention slot advances per token; the
+        cross-attention slot is written once and stays put.
+        """
+        return cache[self._cache_layout.first_attention_layer_index][0]
+
+    def _release_cache(self, cache: list[Any]) -> None:
+        """Drop the cache instead of pooling it.
+
+        Pool reuse calls ``reset()`` on every entry, which a ``CacheList`` pair
+        does not implement. Rebuilding is cheap next to a 30 s encode, and the
+        Apple path runs one request at a time.
+        """
+        del cache
+
     @staticmethod
     def _audio_item(req: Any) -> Any:
         mm_inputs = req.multimodal_inputs
@@ -120,28 +141,37 @@ class WhisperMlxModelRunner:
             return tensor.numpy()
         return tensor
 
+    def _encoder_token_count(self, req: Any) -> int:
+        item = self._audio_item(req)
+        extra = getattr(item, "model_specific_data", None) or {}
+        count = extra.get("num_audio_tokens")
+        if count is None:
+            count = getattr(req.multimodal_inputs, "num_image_tokens", None)
+        if count is None:
+            raise ValueError("Whisper MLX prefill needs the encoder token count")
+        return int(count)
+
     def _decoder_prompt_ids(self, req: Any, token_ids: list[int]) -> list[int]:
-        """Strip the encoder placeholder prefix from a request's input ids.
+        """Return the decoder prompt, with any encoder placeholders removed.
 
         The shared request builder emits ``[pad] * encoder_token_count`` ahead
-        of the real decoder prompt so the CUDA path can reserve KV slots for the
-        cross-attention entries. This path caches those keys and values itself,
-        so the placeholders carry no state and must not be decoded.
+        of the prompt so the scheduler reserves KV slots for the CUDA path's
+        cross-attention entries. Whether the runner still sees that prefix
+        depends on how the batch was assembled, so accept both shapes: this
+        path holds the encoder projection in its own cross-attention cache, and
+        decoding the placeholders would emit tokens from meaningless positions.
         """
-        item = self._audio_item(req)
-        num_audio_tokens = getattr(item, "num_audio_tokens", None)
-        if num_audio_tokens is None:
-            num_audio_tokens = getattr(item, "num_image_tokens", None)
-        if num_audio_tokens is None:
-            raise ValueError("Whisper MLX prefill needs the encoder token count")
-        num_audio_tokens = int(num_audio_tokens)
-        if len(token_ids) <= num_audio_tokens:
-            raise ValueError(
-                f"Whisper MLX prefill got {len(token_ids)} input tokens, which "
-                f"leaves no decoder prompt after {num_audio_tokens} encoder "
-                "placeholders"
-            )
-        return list(token_ids[num_audio_tokens:])
+        count = self._encoder_token_count(req)
+        pad_token_id = getattr(self.model.config, "pad_token_id", None)
+        if (
+            pad_token_id is not None
+            and len(token_ids) > count
+            and all(token == pad_token_id for token in token_ids[:count])
+        ):
+            token_ids = token_ids[count:]
+        if not token_ids:
+            raise ValueError("Whisper MLX prefill got an empty decoder prompt")
+        return list(token_ids)
 
     def prefill_start(
         self,
@@ -198,6 +228,68 @@ class WhisperMlxModelRunner:
             req_pool_idx=req_pool_idx,
             synced_offset=0,
             lazy_logprobs=None,
+        )
+
+    def decode_batch_start(
+        self,
+        req_ids: list[str],
+        edit_rows: mx.array | None = None,
+        logprob_spec: Any = None,
+        logits_hook: Any = None,
+    ):
+        """Decode through the per-request cache rather than the batched path.
+
+        Batched decode reads ``caches[i][layer].offset`` directly, but that
+        entry is the ``CacheList`` pair here, and its shared KV pool has no
+        room for cross-attention. The single-request path calls the model with
+        its own cache, which is what this model is built for.
+        """
+        if (
+            len(req_ids) != 1
+            or edit_rows is not None
+            or logprob_spec is not None
+            or logits_hook is not None
+        ):
+            raise NotImplementedError(
+                "Whisper MLX decode supports one greedy request at a time; got "
+                f"{len(req_ids)} requests"
+            )
+
+        from sglang.srt.hardware_backend.mlx.model_runner import MlxPendingDecode
+
+        req_id = req_ids[0]
+        cache = self._req_caches[req_id]
+        input_ids = mx.array([[self._req_token_ids[req_id][-1]]], dtype=mx.int32)
+        lazy_logits = self._decode_with_native_cache([cache], [input_ids])
+        return MlxPendingDecode(
+            lazy_tokens=mx.argmax(lazy_logits, axis=-1),
+            req_ids=[req_id],
+            caches=[cache],
+            lazy_logprobs=None,
+            logprob_spec=None,
+            edit_rows=None,
+        )
+
+    def decode_batch_start_chained(self, prev):
+        if (
+            len(prev.req_ids) != 1
+            or prev.edit_rows is not None
+            or prev.logprob_spec is not None
+        ):
+            return super().decode_batch_start_chained(prev)
+
+        from sglang.srt.hardware_backend.mlx.model_runner import MlxPendingDecode
+
+        lazy_logits = self._decode_with_native_cache(
+            prev.caches, [prev.lazy_tokens[:, None]]
+        )
+        return MlxPendingDecode(
+            lazy_tokens=mx.argmax(lazy_logits, axis=-1),
+            req_ids=prev.req_ids,
+            caches=prev.caches,
+            lazy_logprobs=None,
+            logprob_spec=None,
+            edit_rows=None,
         )
 
 

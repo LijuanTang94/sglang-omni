@@ -215,7 +215,9 @@ def test_whisper_asr_config_uses_single_batched_stage() -> None:
     assert stage.factory_path.endswith("create_sglang_whisper_asr_executor")
     assert stage.engine.max_running_requests == 64
     factory = stage.factory
-    assert factory.device == "cuda:0"
+    # None lets the builder resolve the device from the active platform;
+    # a pinned cuda:0 sends non-CUDA backends into torch.cuda.set_device.
+    assert factory.device is None
     assert factory.enable_encoder_cuda_graph is True
     assert factory.request_build_max_workers == 8
     assert factory.enable_async_decode is True

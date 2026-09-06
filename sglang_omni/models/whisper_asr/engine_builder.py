@@ -268,6 +268,13 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
                 "mem_fraction_static": self.mem_fraction_static,
                 "max_prefill_tokens": self.context_length,
                 "chunked_prefill_size": 0,
+                # Without this the backend defaults to flashinfer, and the
+                # scheduler's KV-index writer then takes its Triton path:
+                # write_req_to_token_pool_triton[grid](...) raises
+                # "'function' object is not subscriptable" against the Triton
+                # stub on Apple. torch_native selects the Python fallback.
+                "attention_backend": "torch_native",
+                "mm_attention_backend": "sdpa",
                 "dtype": dtype,
             }
         return {

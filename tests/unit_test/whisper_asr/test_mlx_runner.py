@@ -19,6 +19,7 @@ from sglang_omni.models.whisper_asr.mlx.runner import (  # noqa: E402
 
 DECODER_LAYERS = 2
 ENCODER_TOKENS = 20
+PAD_TOKEN_ID = 50257
 
 
 def _tiny_config() -> ModelConfig:
@@ -34,6 +35,7 @@ def _tiny_config() -> ModelConfig:
         decoder_ffn_dim=128,
         max_target_positions=16,
         vocab_size=64,
+        pad_token_id=PAD_TOKEN_ID,
     )
 
 
@@ -49,13 +51,16 @@ def _runner() -> WhisperMlxModelRunner:
 
 
 def _request(num_audio_tokens: int = ENCODER_TOKENS) -> SimpleNamespace:
+    # Mirrors what the shared request builder attaches: the encoder token count
+    # rides in model_specific_data, not as a field on the item.
     item = SimpleNamespace(
         feature=None,
-        num_audio_tokens=num_audio_tokens,
-        num_image_tokens=num_audio_tokens,
+        model_specific_data={"num_audio_tokens": num_audio_tokens},
     )
     return SimpleNamespace(
-        multimodal_inputs=SimpleNamespace(mm_items=[item]),
+        multimodal_inputs=SimpleNamespace(
+            mm_items=[item], num_image_tokens=num_audio_tokens
+        ),
     )
 
 
@@ -96,20 +101,31 @@ def test_cache_has_both_lifetimes_per_layer() -> None:
 
 
 def test_decoder_prompt_drops_the_encoder_placeholders() -> None:
-    """The shared request builder prefixes pad ids for the CUDA KV reservation."""
+    """The shared request builder prefixes pad ids for the CUDA KV reservation.
+
+    Decoding those placeholders would emit tokens from meaningless positions,
+    since this path holds the encoder projection in its own cross cache.
+    """
     runner = _runner()
     prompt = [50258, 50259, 50360]
-    token_ids = [0] * ENCODER_TOKENS + prompt
+    token_ids = [PAD_TOKEN_ID] * ENCODER_TOKENS + prompt
 
     assert runner._decoder_prompt_ids(_request(), token_ids) == prompt
 
 
-def test_decoder_prompt_rejects_input_that_is_all_placeholders() -> None:
-    """Decoding the pad prefix would emit tokens from meaningless positions."""
+def test_decoder_prompt_passes_through_when_already_stripped() -> None:
+    """Whether the prefix reaches the runner depends on how the batch was built."""
+    runner = _runner()
+    prompt = [50258, 50259, 50360]
+
+    assert runner._decoder_prompt_ids(_request(), prompt) == prompt
+
+
+def test_decoder_prompt_rejects_an_empty_prompt() -> None:
     runner = _runner()
 
-    with pytest.raises(ValueError, match="leaves no decoder prompt"):
-        runner._decoder_prompt_ids(_request(), [0] * ENCODER_TOKENS)
+    with pytest.raises(ValueError, match="empty decoder prompt"):
+        runner._decoder_prompt_ids(_request(), [])
 
 
 def test_audio_item_requires_exactly_one_clip() -> None:
