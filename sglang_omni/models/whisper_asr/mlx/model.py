@@ -28,8 +28,13 @@ class WhisperAttention(nn.Module):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
+        # Whisper uses plain multi-head attention, so every query head has its
+        # own key/value head. Stated explicitly because SGLang's MLX cache
+        # sizing reads num_kv_heads and scale off the attention module.
+        self.num_kv_heads = num_heads
         self.head_dim = embed_dim // num_heads
         self.scaling = self.head_dim**-0.5
+        self.scale = self.scaling
 
         if (self.head_dim * num_heads) != embed_dim:
             raise ValueError(
@@ -54,6 +59,7 @@ class WhisperAttention(nn.Module):
         key_value_states: Optional[mx.array] = None,
         mask: Optional[mx.array] = None,
         cache: Optional[Any] = None,
+        is_cross: bool = False,
     ) -> mx.array:
         """Run attention, caching keys and values according to their lifetime.
 
@@ -63,11 +69,15 @@ class WhisperAttention(nn.Module):
         so they are projected once into an ``ArraysCache`` and reused. Mixing
         the two would either recompute the encoder projection every step or
         append to a sequence that should stay fixed.
+
+        ``is_cross`` is explicit rather than inferred from ``key_value_states``
+        because decode steps reach cross-attention with no encoder output in
+        hand: by then the projection is already cached.
         """
         bsz, seq_len, _ = hidden_states.shape
         query_states = self._shape(self.q_proj(hidden_states) * self.scaling)
 
-        if key_value_states is None:
+        if not is_cross:
             key_states = self._shape(self.k_proj(hidden_states))
             value_states = self._shape(self.v_proj(hidden_states))
             if cache is not None:
@@ -76,6 +86,11 @@ class WhisperAttention(nn.Module):
                 )
         elif cache is not None and cache[0] is not None:
             key_states, value_states = cache[0], cache[1]
+        elif key_value_states is None:
+            raise ValueError(
+                "cross-attention needs the encoder output until its cache is "
+                "populated; pass encoder_hidden_states on the prefill call"
+            )
         else:
             key_states = self._shape(self.k_proj(key_value_states))
             value_states = self._shape(self.v_proj(key_value_states))
@@ -199,7 +214,7 @@ class WhisperDecoderLayer(nn.Module):
     def __call__(
         self,
         hidden_states: mx.array,
-        encoder_hidden_states: mx.array,
+        encoder_hidden_states: Optional[mx.array] = None,
         mask: Optional[mx.array] = None,
         cache: Optional[Any] = None,
     ) -> mx.array:
@@ -218,6 +233,7 @@ class WhisperDecoderLayer(nn.Module):
             hidden_states,
             key_value_states=encoder_hidden_states,
             cache=cross_cache,
+            is_cross=True,
         )
         hidden_states = residual + hidden_states
 
@@ -244,7 +260,7 @@ class WhisperDecoder(nn.Module):
     def __call__(
         self,
         input_ids: mx.array,
-        encoder_hidden_states: mx.array,
+        encoder_hidden_states: Optional[mx.array] = None,
         mask: Optional[mx.array] = None,
         cache: Optional[list[Any]] = None,
         offset: int = 0,
@@ -313,10 +329,21 @@ class WhisperMlxModel(nn.Module):
             for _ in range(self.config.decoder_layers)
         ]
 
+    def __call__(
+        self, input_ids: mx.array, cache: Optional[List[Any]] = None
+    ) -> mx.array:
+        """Decode-step entry point for SGLang's MLX runner.
+
+        The runner hands the model tokens and a cache, with no encoder output:
+        by the time it decodes, prefill has already filled every layer's
+        cross-attention cache, so the encoder projection is not needed again.
+        """
+        return self.decode(input_ids, None, cache=cache)
+
     def decode(
         self,
         input_ids: mx.array,
-        encoder_hidden_states: mx.array,
+        encoder_hidden_states: Optional[mx.array] = None,
         cache: Optional[List[Any]] = None,
         offset: Optional[int] = None,
     ) -> mx.array:

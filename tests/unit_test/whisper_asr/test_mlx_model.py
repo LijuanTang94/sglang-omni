@@ -221,6 +221,47 @@ def test_incremental_decode_matches_full_sequence() -> None:
     assert np.abs(np.stack(stepped, axis=1) - full).max() < 2e-4
 
 
+def test_call_decodes_without_the_encoder_output() -> None:
+    """SGLang's MLX runner decodes with ``model(input_ids, cache=cache)``.
+
+    It has no encoder output to pass, so once prefill has filled the
+    cross-attention cache the model must decode from tokens alone and give the
+    same answer as passing the encoder states every step.
+    """
+    hf = _hf_seq2seq()
+    model = _loaded_seq2seq(hf)
+    encoded = model.encode(mx.array(torch.randn(1, MELS, POSITIONS * 2).numpy()))
+    tokens = [1, 5, 9, 13]
+
+    reference_cache = model.make_cache()
+    reference = np.stack(
+        [
+            np.array(model.decode(mx.array([[t]]), encoded, cache=reference_cache))[
+                :, 0
+            ]
+            for t in tokens
+        ],
+        axis=1,
+    )
+
+    cache = model.make_cache()
+    stepped = [
+        np.array(model.decode(mx.array([[tokens[0]]]), encoded, cache=cache))[:, 0]
+    ]
+    for token in tokens[1:]:
+        stepped.append(np.array(model(mx.array([[token]]), cache=cache))[:, 0])
+
+    assert np.array_equal(np.stack(stepped, axis=1), reference)
+
+
+def test_call_without_a_populated_cross_cache_is_rejected() -> None:
+    """Decoding before prefill must not silently reuse self-attention states."""
+    model = WhisperMlxModel(_tiny_config())
+
+    with pytest.raises(ValueError, match="cross-attention needs the encoder output"):
+        model(mx.array([[1]]), cache=model.make_cache())
+
+
 def test_cross_attention_cache_is_fixed_while_self_attention_grows() -> None:
     """Cross-attention keys come from the encoder, so they must not accumulate."""
     hf = _hf_seq2seq()
