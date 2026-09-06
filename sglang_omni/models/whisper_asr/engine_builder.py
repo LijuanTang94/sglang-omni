@@ -10,6 +10,7 @@ from sglang_omni.models.whisper_asr.encoder_service import (
     WhisperPreLMEncoderService,
     build_cache_namespace,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
 
 logger = logging.getLogger(__name__)
@@ -195,6 +196,12 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
 
     def setup_runtime_resources(self, model: Any, server_args: Any) -> None:
         del server_args
+        if self._uses_mlx():
+            # The pre-LM service caches Torch encoder states and drives encoder
+            # CUDA graphs. On MLX the runner owns encoding, and its output goes
+            # straight into the per-request cross-attention cache.
+            self.audio_encoder_service = None
+            return
         if not self.enable_pre_lm_encoder:
             return
 
@@ -226,6 +233,12 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             service.pin_host_memory,
         )
 
+    @staticmethod
+    def _uses_mlx() -> bool:
+        from sglang.srt.utils.tensor_bridge import use_mlx
+
+        return bool(use_mlx())
+
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
         if int(overrides.get("chunked_prefill_size") or 0) > 0:
             raise ValueError(
@@ -235,9 +248,28 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         overrides["chunked_prefill_size"] = 0
         # Note (Akazaakane): Timestamped Whisper requests install an internal
         # per-request processor; this flag permits SGLang to execute it.
-        overrides["enable_custom_logit_processor"] = True
+        # The MLX path decodes greedily and rejects logit editing in
+        # prefill_start, so leave the flag off rather than advertising support.
+        overrides["enable_custom_logit_processor"] = not self._uses_mlx()
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+        if self._uses_mlx():
+            if not current_platform.is_mps():
+                raise RuntimeError("SGLANG_USE_MLX=1 requires the Apple Metal platform")
+            # The encoder output lives in the MLX prefill's cross-attention
+            # cache rather than in the KV pool, so token-only radix reuse and
+            # split prefill would drop it.
+            return {
+                "max_running_requests": self.max_running_requests,
+                "disable_cuda_graph": True,
+                "disable_overlap_schedule": True,
+                "disable_radix_cache": True,
+                "enable_torch_compile": False,
+                "mem_fraction_static": self.mem_fraction_static,
+                "max_prefill_tokens": self.context_length,
+                "chunked_prefill_size": 0,
+                "dtype": dtype,
+            }
         return {
             "max_running_requests": self.max_running_requests,
             "disable_cuda_graph": False,
@@ -249,6 +281,15 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             "sampling_backend": "pytorch",
             "dtype": dtype,
         }
+
+    def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
+        if self._uses_mlx():
+            from sglang_omni.model_runner.mlx_model_worker import (
+                MlxSchedulerModelRunner,
+            )
+
+            return MlxSchedulerModelRunner(model_worker, output_proc)
+        return super().make_model_runner(model_worker, output_proc)
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
         del model
