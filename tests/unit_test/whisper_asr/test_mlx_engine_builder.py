@@ -101,3 +101,23 @@ def test_mlx_uses_the_omni_mlx_scheduler_runner() -> None:
         runner = _builder().make_model_runner(worker, SimpleNamespace())
 
     assert isinstance(runner, MlxSchedulerModelRunner)
+
+
+def test_mlx_worker_dispatch_accepts_whisper_and_rejects_others() -> None:
+    """create_mlx_model_worker gates on the architecture before doing any work.
+
+    Whisper has to be listed there or the MLX path is unreachable, and the
+    rejection message is what a new model's author reads first.
+    """
+    from sglang_omni.model_runner.mlx_model_worker import create_mlx_model_worker
+
+    with pytest.raises(NotImplementedError) as excinfo:
+        create_mlx_model_worker(
+            config=SimpleNamespace(model_arch_override="SomeOtherModel"),
+            server_args=SimpleNamespace(),
+            gpu_id=0,
+        )
+
+    message = str(excinfo.value)
+    assert "Qwen3ASRForConditionalGeneration" in message
+    assert "WhisperForConditionalGeneration" in message
