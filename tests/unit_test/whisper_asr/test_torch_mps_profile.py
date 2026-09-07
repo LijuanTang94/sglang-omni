@@ -107,19 +107,34 @@ def test_forward_guard_uses_no_grad_not_inference_mode() -> None:
     assert pytest.approx(out.tolist()) == [1.0, 1.0]
 
 
-def test_apple_paths_reject_concurrency_above_one() -> None:
+def test_apple_paths_clamp_concurrency_to_one() -> None:
     """Both Apple runners decode one request at a time.
 
-    Without this check the server starts and then fails inside the first
-    concurrent decode step, which is a much worse place to find out.
+    The clamp has to land in adjust_overrides: the stage's own EngineArgs carry
+    the CUDA value of 64 and take precedence over generation_defaults, so a
+    default launch would otherwise reach a runner that cannot serve it.
     """
-    server_args = type(
-        "Args", (), {"max_running_requests": 4, "mlx_enable_sampling": False}
-    )()
+    overrides = {"max_running_requests": 64, "chunked_prefill_size": 0}
 
     with _torch_mps():
-        with pytest.raises(ValueError, match="one request at a time"):
-            _builder().validate_before_infrastructure(server_args)
+        _builder().adjust_overrides(overrides)
+
+    assert overrides["max_running_requests"] == 1
+
+
+def test_cuda_concurrency_is_left_alone() -> None:
+    overrides = {"max_running_requests": 64, "chunked_prefill_size": 0}
+
+    with (
+        mock.patch("sglang.srt.utils.tensor_bridge.use_mlx", return_value=False),
+        mock.patch(
+            "sglang_omni.models.whisper_asr.engine_builder.current_platform"
+        ) as platform,
+    ):
+        platform.is_mps.return_value = False
+        _builder().adjust_overrides(overrides)
+
+    assert overrides["max_running_requests"] == 64
 
 
 def test_mlx_rejects_sampling() -> None:

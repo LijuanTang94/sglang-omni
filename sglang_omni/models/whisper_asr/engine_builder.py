@@ -246,24 +246,14 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
     def validate_before_infrastructure(self, server_args: Any) -> None:
         """Reject Apple settings the runners cannot honor, before startup.
 
-        Both Apple paths decode one request at a time. Left unchecked the server
-        comes up and then fails inside the first concurrent decode step, which
-        is a much worse place to learn about it.
+        Concurrency is clamped in adjust_overrides rather than rejected here,
+        since the stage's own EngineArgs carry the CUDA value and a hard failure
+        would make the default launch unusable.
         """
-        # Apple checks run first: they name the setting the caller has to change,
+        # The Apple check runs first so the error names the setting to change,
         # where the shared batch policy would report a generic mismatch.
-        if self._uses_mlx() or self._uses_torch_mps():
-            path = "MLX" if self._uses_mlx() else "Torch MPS"
-            if getattr(server_args, "max_running_requests", 1) != 1:
-                raise ValueError(
-                    f"Whisper {path} currently decodes one request at a time; "
-                    f"got max_running_requests="
-                    f"{server_args.max_running_requests}"
-                )
-            if self._uses_mlx() and getattr(server_args, "mlx_enable_sampling", False):
-                raise ValueError(
-                    "Whisper MLX currently requires mlx_enable_sampling=False"
-                )
+        if self._uses_mlx() and getattr(server_args, "mlx_enable_sampling", False):
+            raise ValueError("Whisper MLX currently requires mlx_enable_sampling=False")
         super().validate_before_infrastructure(server_args)
 
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
@@ -278,6 +268,20 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         # The MLX path decodes greedily and rejects logit editing in
         # prefill_start, so leave the flag off rather than advertising support.
         overrides["enable_custom_logit_processor"] = not self._uses_mlx()
+        if self._uses_mlx() or self._uses_torch_mps():
+            # Both Apple paths decode one request at a time. This has to happen
+            # here rather than in generation_defaults, because the stage's own
+            # EngineArgs take precedence over those defaults and would restore
+            # the CUDA value.
+            requested = overrides.get("max_running_requests")
+            if requested is not None and int(requested) != 1:
+                logger.warning(
+                    "Whisper %s decodes one request at a time; overriding "
+                    "max_running_requests=%s with 1",
+                    "MLX" if self._uses_mlx() else "Torch MPS",
+                    requested,
+                )
+            overrides["max_running_requests"] = 1
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
         if self._uses_mlx():
@@ -287,10 +291,8 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             # cache rather than in the KV pool, so token-only radix reuse and
             # split prefill would drop it.
             return {
-                # The MLX runner decodes one request at a time: its per-layer
-                # CacheList has no representation in SGLang's batched MLX path.
-                # Pinning this here means the default launch works; an explicit
-                # override still reaches validate_before_infrastructure.
+                # Clamped again in adjust_overrides, which runs after the
+                # stage's own EngineArgs and is what actually decides.
                 "max_running_requests": 1,
                 "disable_cuda_graph": True,
                 "disable_overlap_schedule": True,
