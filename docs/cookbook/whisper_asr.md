@@ -10,6 +10,61 @@ Install `sglang-omni` by following [Installation](../get_started/installation.md
 hf download openai/whisper-large-v3
 ```
 
+### Apple Silicon (MLX)
+
+macOS arm64 runs Whisper through SGLang's native MLX runner. Install with the
+Apple installer, which builds an isolated environment and pins the Darwin
+dependencies:
+
+```bash
+./install.sh
+source .venv-apple/bin/activate
+```
+
+See [Installation](../get_started/installation.md#macos-apple-silicon) for what
+the script does. Audio decoding needs Homebrew's versioned FFmpeg 7, and because
+`ffmpeg@7` is keg-only its library directory has to be on `DYLD_LIBRARY_PATH`
+whenever the server starts:
+
+```bash
+export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+```
+
+Verify Metal and FFmpeg loading before downloading a checkpoint:
+
+```bash
+SGLANG_USE_MLX=1 python - <<'PY'
+import mlx.core as mx
+from torchcodec.decoders import AudioDecoder
+
+assert mx.metal.is_available()
+print("MLX Metal and TorchCodec FFmpeg loading are available")
+PY
+```
+
+The MLX path loads the **official** checkpoint; no converted or quantized MLX
+artifact is required. Opt into the MLX runner with `SGLANG_USE_MLX=1`:
+
+```bash
+export SGLANG_USE_MLX=1
+export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+
+sgl-omni serve \
+  --model-path openai/whisper-large-v3 \
+  --model-name openai/whisper-large-v3 \
+  --asr.engine.max_running_requests 1 \
+  --port 8000
+```
+
+The HTTP and SSE transcription interfaces below are the same as on CUDA. The
+initial profile is one active request and greedy decoding; radix caching,
+chunked prefill, CUDA graphs, the pre-LM encoder service, and custom logit
+processors are all unused on this path, and the encoder output is held in each
+decoder layer's cross-attention cache rather than in the KV pool.
+
+Torch/MPS is not implemented for Whisper. See
+[Known Limitations](#known-limitations).
+
 ## Server Configuration
 
 Whisper ASR runs a single ASR stage on one GPU.
@@ -263,6 +318,28 @@ The async-decode comparison used the 128-sample SeedTTS EN subset on the same H2
 
 All 4,608 measured requests across both modes completed successfully, and all 2,304 paired transcripts matched exactly. Batch size 1 uses the synchronous fast path, so its 1.6% difference is run-to-run noise rather than async work. At concurrency 32, request-stage profiling measured 614.3 ms synchronous versus 585.5 ms asynchronous P95 from prefill completion to request completion. A separate async-only `openai/whisper-base` budget comparison showed why 6,144 is the default: relative to 4,096, scheduler queue P95 fell from 92.2 ms to 52.2 ms and throughput rose from 134.83 to 166.69 req/s.
 
+### Apple Silicon (MLX)
+
+Measured on a MacBook Pro with an Apple M4 Pro (8 performance + 4 efficiency
+cores), 24 GB unified memory, macOS 26.3.1, torch 2.11.0, and SGLang 0.5.18
+built by `./install.sh`. The official `openai/whisper-large-v3` checkpoint was
+served with `SGLANG_USE_MLX=1` at one active request, greedy decoding, over
+HTTP. Accuracy used the 1,000-utterance
+[`pipecat-ai/stt-benchmark-data`](https://huggingface.co/datasets/pipecat-ai/stt-benchmark-data)
+corpus (160 minutes of English audio) scored with Whisper's own
+`EnglishTextNormalizer`, after two discarded warmups.
+
+| Scored utterances | Failures | Corpus WER | Latency mean (s) | Latency p50 (s) | Latency p95 (s) |
+|---:|---:|---:|---:|---:|---:|
+| 999 | 0 | 0.0366 | 1.286 | 1.381 | 1.596 |
+
+Substitutions 356, deletions 217, insertions 299, hits 23,278.
+
+Latency did not drift over the run: the running median was 1.442 s at 100
+requests, 1.425 s at 500, and 1.381 s at 1,000. All 1,000 requests completed and
+the server stayed healthy, so this path shows no accumulation under sustained
+single-request load.
+
 ## Known Limitations
 
 - Whisper ASR remains experimental. Validate checkpoint-specific accuracy and
@@ -288,6 +365,18 @@ All 4,608 measured requests across both modes completed successfully, and all 2,
 - Chunked prefill stays disabled because the Whisper encoder prefix must be
   admitted atomically. Requests that exceed the current prefill budget wait
   for the next batch instead of splitting the encoder prefix.
+- On Apple Silicon, only the MLX path is supported (`SGLANG_USE_MLX=1`), with
+  one active request and greedy decoding. Timestamps, custom logit processors,
+  and sampling penalties are rejected there.
+- Torch/MPS is not implemented for Whisper. It transcribes correctly but
+  retains several GB of live MPS tensors per request and exhausts PyTorch's MPS
+  watermark after a handful of requests: roughly 4.6 GB per request with the
+  pre-LM encoder cache on, and 13.9 GB with it off, so most of it is the
+  encoder. Whisper's encoder runs full attention over a fixed 1,500-position
+  window — about 90 MB of attention scores per layer across 32 layers — where
+  Qwen3-ASR's windowed encoder (`n_window=50`) never materialises that. Note
+  that MPS allocations do not appear in process RSS, so RSS-based monitoring
+  will not show this.
 - First startup can take several minutes.
 - The endpoint accepts one uploaded file per request.
 - Audio is resampled to 16 kHz before transcription.
