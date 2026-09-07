@@ -207,7 +207,11 @@ class WhisperSGLangSelfAttention(nn.Module):
         key = key.view(-1, self.num_heads, self.head_dim)
         value = value.view(-1, self.num_heads, self.head_dim)
         attn_output = self.attn(query, key, value, forward_batch)
-        return self.out_proj(attn_output)
+        # Backends disagree on the output rank: flashinfer returns
+        # (tokens, embed_dim) while torch_native allocates `empty_like(q)` and
+        # hands back (tokens, heads, head_dim). Flatten so out_proj sees
+        # embed_dim either way; this is a no-op on the already-flat backends.
+        return self.out_proj(attn_output.reshape(-1, self.embed_dim))
 
 
 class WhisperSGLangCrossAttention(nn.Module):
@@ -252,7 +256,9 @@ class WhisperSGLangCrossAttention(nn.Module):
             key = key.view(-1, self.num_heads, self.head_dim)
             value = value.view(-1, self.num_heads, self.head_dim)
         attn_output = self.attn(query, key, value, forward_batch)
-        return self.out_proj(attn_output)
+        # See WhisperSGLangSelfAttention: torch_native returns the unflattened
+        # head layout, flashinfer does not.
+        return self.out_proj(attn_output.reshape(-1, self.embed_dim))
 
 
 class WhisperDecoderLayer(nn.Module):
