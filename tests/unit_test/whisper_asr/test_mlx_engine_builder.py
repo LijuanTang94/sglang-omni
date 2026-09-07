@@ -50,7 +50,7 @@ def test_mlx_defaults_disable_radix_and_graphs() -> None:
 
 
 def test_cuda_defaults_are_unchanged() -> None:
-    with _backend(mlx=False):
+    with _backend(mlx=False, mps=False):
         defaults = _builder().generation_defaults(dtype="bfloat16")
 
     assert defaults["disable_cuda_graph"] is False

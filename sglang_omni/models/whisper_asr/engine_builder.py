@@ -239,6 +239,10 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
 
         return bool(use_mlx())
 
+    def _uses_torch_mps(self) -> bool:
+        """True on Apple Metal without the opt-in MLX runner."""
+        return not self._uses_mlx() and current_platform.is_mps()
+
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
         if int(overrides.get("chunked_prefill_size") or 0) > 0:
             raise ValueError(
@@ -273,6 +277,30 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
                 # write_req_to_token_pool_triton[grid](...) raises
                 # "'function' object is not subscriptable" against the Triton
                 # stub on Apple. torch_native selects the Python fallback.
+                "attention_backend": "torch_native",
+                "mm_attention_backend": "sdpa",
+                "dtype": dtype,
+            }
+        if self._uses_torch_mps():
+            # Metal has no CUDA graph or Triton lifecycle, and the flashinfer
+            # default is absent too: it fails at import with "name
+            # 'BatchPrefillWithRaggedKVCacheWrapper' is not defined".
+            #
+            # max_total_tokens matters as much as the backend. Unified memory
+            # reports far more free memory than the machine can back, and
+            # PyTorch MPS lets allocations run past physical RAM, so the pool
+            # sizer walks up until Metal refuses. Bounding the KV budget to this
+            # model's own context keeps it honest.
+            return {
+                "max_running_requests": 1,
+                "disable_cuda_graph": True,
+                "disable_overlap_schedule": True,
+                "disable_radix_cache": True,
+                "enable_torch_compile": False,
+                "mem_fraction_static": self.mem_fraction_static,
+                "max_total_tokens": self.context_length,
+                "max_prefill_tokens": self.context_length,
+                "chunked_prefill_size": 0,
                 "attention_backend": "torch_native",
                 "mm_attention_backend": "sdpa",
                 "dtype": dtype,

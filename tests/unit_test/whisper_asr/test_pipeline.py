@@ -36,6 +36,21 @@ def _encoder_graph_builder(**kwargs):
     return builder
 
 
+@pytest.fixture(autouse=True)
+def _default_platform(monkeypatch):
+    """Pin the platform so these expectations do not depend on the host.
+
+    The builder picks an Apple Metal profile when `current_platform.is_mps()`
+    is true, so on a macOS arm64 developer machine every assertion here about
+    CUDA defaults would otherwise read the wrong branch.
+    """
+    from sglang_omni.models.whisper_asr import engine_builder
+
+    monkeypatch.setattr(
+        engine_builder.current_platform, "is_mps", lambda: False, raising=False
+    )
+
+
 def test_whisper_stage_defaults() -> None:
     signature = inspect.signature(whisper_asr_stages.create_sglang_whisper_asr_executor)
 
