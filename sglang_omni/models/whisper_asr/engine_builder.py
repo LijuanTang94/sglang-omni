@@ -243,6 +243,29 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         """True on Apple Metal without the opt-in MLX runner."""
         return not self._uses_mlx() and current_platform.is_mps()
 
+    def validate_before_infrastructure(self, server_args: Any) -> None:
+        """Reject Apple settings the runners cannot honor, before startup.
+
+        Both Apple paths decode one request at a time. Left unchecked the server
+        comes up and then fails inside the first concurrent decode step, which
+        is a much worse place to learn about it.
+        """
+        # Apple checks run first: they name the setting the caller has to change,
+        # where the shared batch policy would report a generic mismatch.
+        if self._uses_mlx() or self._uses_torch_mps():
+            path = "MLX" if self._uses_mlx() else "Torch MPS"
+            if getattr(server_args, "max_running_requests", 1) != 1:
+                raise ValueError(
+                    f"Whisper {path} currently decodes one request at a time; "
+                    f"got max_running_requests="
+                    f"{server_args.max_running_requests}"
+                )
+            if self._uses_mlx() and getattr(server_args, "mlx_enable_sampling", False):
+                raise ValueError(
+                    "Whisper MLX currently requires mlx_enable_sampling=False"
+                )
+        super().validate_before_infrastructure(server_args)
+
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
         if int(overrides.get("chunked_prefill_size") or 0) > 0:
             raise ValueError(

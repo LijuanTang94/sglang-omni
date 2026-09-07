@@ -105,3 +105,34 @@ def test_forward_guard_uses_no_grad_not_inference_mode() -> None:
     # An inference-mode tensor cannot be mutated afterwards; a no_grad one can.
     out.add_(1.0)
     assert pytest.approx(out.tolist()) == [1.0, 1.0]
+
+
+def test_apple_paths_reject_concurrency_above_one() -> None:
+    """Both Apple runners decode one request at a time.
+
+    Without this check the server starts and then fails inside the first
+    concurrent decode step, which is a much worse place to find out.
+    """
+    server_args = type(
+        "Args", (), {"max_running_requests": 4, "mlx_enable_sampling": False}
+    )()
+
+    with _torch_mps():
+        with pytest.raises(ValueError, match="one request at a time"):
+            _builder().validate_before_infrastructure(server_args)
+
+
+def test_mlx_rejects_sampling() -> None:
+    server_args = type(
+        "Args", (), {"max_running_requests": 1, "mlx_enable_sampling": True}
+    )()
+
+    with (
+        mock.patch("sglang.srt.utils.tensor_bridge.use_mlx", return_value=True),
+        mock.patch(
+            "sglang_omni.models.whisper_asr.engine_builder.current_platform"
+        ) as platform,
+    ):
+        platform.is_mps.return_value = True
+        with pytest.raises(ValueError, match="mlx_enable_sampling=False"):
+            _builder().validate_before_infrastructure(server_args)
