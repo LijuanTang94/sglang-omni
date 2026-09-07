@@ -47,6 +47,9 @@ def test_mlx_defaults_disable_radix_and_graphs() -> None:
     assert defaults["enable_torch_compile"] is False
     assert defaults["chunked_prefill_size"] == 0
     assert "sampling_backend" not in defaults
+    # Pinned rather than passed through, so the default launch does not need a
+    # flag; an explicit override still reaches validate_before_infrastructure.
+    assert defaults["max_running_requests"] == 1
 
 
 def test_cuda_defaults_are_unchanged() -> None:

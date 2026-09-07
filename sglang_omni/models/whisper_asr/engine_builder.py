@@ -287,7 +287,11 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             # cache rather than in the KV pool, so token-only radix reuse and
             # split prefill would drop it.
             return {
-                "max_running_requests": self.max_running_requests,
+                # The MLX runner decodes one request at a time: its per-layer
+                # CacheList has no representation in SGLang's batched MLX path.
+                # Pinning this here means the default launch works; an explicit
+                # override still reaches validate_before_infrastructure.
+                "max_running_requests": 1,
                 "disable_cuda_graph": True,
                 "disable_overlap_schedule": True,
                 "disable_radix_cache": True,

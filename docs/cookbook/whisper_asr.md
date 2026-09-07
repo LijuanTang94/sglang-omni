@@ -340,22 +340,26 @@ All 4,608 measured requests across both modes completed successfully, and all 2,
 Measured on a MacBook Pro with an Apple M4 Pro (8 performance + 4 efficiency
 cores), 24 GB unified memory, macOS 26.3.1, torch 2.11.0, and SGLang 0.5.18
 built by `./install.sh`. The official `openai/whisper-large-v3` checkpoint was
-served with `SGLANG_USE_MLX=1` at one active request, greedy decoding, over
-HTTP. Accuracy used the 1,000-utterance
+served on both paths at one active request, greedy decoding, over HTTP. Accuracy used the 1,000-utterance
 [`pipecat-ai/stt-benchmark-data`](https://huggingface.co/datasets/pipecat-ai/stt-benchmark-data)
 corpus (160 minutes of English audio) scored with Whisper's own
 `EnglishTextNormalizer`, after two discarded warmups.
 
-| Scored utterances | Failures | Corpus WER | Latency mean (s) | Latency p50 (s) | Latency p95 (s) |
-|---:|---:|---:|---:|---:|---:|
-| 999 | 0 | 0.0366 | 1.286 | 1.381 | 1.596 |
+| Path | Scored | Failures | Corpus WER | Mean (s) | p50 (s) | p95 (s) |
+|---|---:|---:|---:|---:|---:|---:|
+| MLX | 999 | 0 | 0.0366 | 1.286 | 1.381 | 1.596 |
+| Torch/MPS | 999 | 0 | 0.0366 | 4.578 | 4.804 | 8.323 |
 
-Substitutions 356, deletions 217, insertions 299, hits 23,278.
+The two paths agree on accuracy to within two edits: MLX recorded 356
+substitutions, 217 deletions, and 299 insertions against Torch/MPS's 355, 218,
+and 301, on an identical 23,278 hits. MLX is about 3.5x faster on the mean and
+5.2x on p95.
 
-Latency did not drift over the run: the running median was 1.442 s at 100
-requests, 1.425 s at 500, and 1.381 s at 1,000. All 1,000 requests completed and
-the server stayed healthy, so this path shows no accumulation under sustained
-single-request load.
+Neither path drifted over its run. The MLX running median was 1.442 s at 100
+requests, 1.425 s at 500, and 1.381 s at 1,000; Torch/MPS went 5.385 s, 4.824 s,
+4.804 s across the same points. All 1,000 requests completed on both and the
+server stayed healthy, so neither accumulates under sustained single-request
+load.
 
 ## Known Limitations
 
