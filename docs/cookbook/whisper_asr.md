@@ -62,8 +62,25 @@ chunked prefill, CUDA graphs, the pre-LM encoder service, and custom logit
 processors are all unused on this path, and the encoder output is held in each
 decoder layer's cross-attention cache rather than in the KV pool.
 
-Torch/MPS is not implemented for Whisper. See
-[Known Limitations](#known-limitations).
+### Apple Silicon (Torch/MPS)
+
+Leaving `SGLANG_USE_MLX` unset runs the same Torch model definition as CUDA on
+Apple's Metal backend, which needs no MLX implementation per model but is
+slower. The FFmpeg 7 requirement above still applies:
+
+```bash
+unset SGLANG_USE_MLX
+export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+
+sgl-omni serve \
+  --model-path openai/whisper-large-v3 \
+  --model-name openai/whisper-large-v3 \
+  --port 8000
+```
+
+This path serves one active request with greedy decoding, uses the eager
+`torch_native`/`sdpa` profile, and bounds its KV pool to the model's context
+length. See [Known Limitations](#known-limitations) for why those bounds exist.
 
 ## Server Configuration
 
@@ -365,18 +382,18 @@ single-request load.
 - Chunked prefill stays disabled because the Whisper encoder prefix must be
   admitted atomically. Requests that exceed the current prefill budget wait
   for the next batch instead of splitting the encoder prefix.
-- On Apple Silicon, only the MLX path is supported (`SGLANG_USE_MLX=1`), with
-  one active request and greedy decoding. Timestamps, custom logit processors,
-  and sampling penalties are rejected there.
-- Torch/MPS is not implemented for Whisper. It transcribes correctly but
-  retains several GB of live MPS tensors per request and exhausts PyTorch's MPS
-  watermark after a handful of requests: roughly 4.6 GB per request with the
-  pre-LM encoder cache on, and 13.9 GB with it off, so most of it is the
-  encoder. Whisper's encoder runs full attention over a fixed 1,500-position
-  window — about 90 MB of attention scores per layer across 32 layers — where
-  Qwen3-ASR's windowed encoder (`n_window=50`) never materialises that. Note
-  that MPS allocations do not appear in process RSS, so RSS-based monitoring
-  will not show this.
+- On Apple Silicon both paths run one active request with greedy decoding. On
+  the MLX path, timestamps, custom logit processors, and sampling penalties are
+  rejected.
+- The Torch/MPS path bounds its KV pool to the model's own context length,
+  because unified memory reports far more free memory than the machine can back
+  and the pool sizer would otherwise walk past physical RAM until Metal
+  refuses. It also pins `attention_backend=torch_native`, since the flashinfer
+  default is absent on Metal.
+- MPS allocations do not appear in process RSS, so RSS-based memory monitoring
+  will not reflect what this path actually holds. Use
+  `torch.mps.current_allocated_memory()` and
+  `torch.mps.driver_allocated_memory()` instead.
 - First startup can take several minutes.
 - The endpoint accepts one uploaded file per request.
 - Audio is resampled to 16 kHz before transcription.
