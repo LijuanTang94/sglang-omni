@@ -37,15 +37,19 @@ def _encoder_graph_builder(**kwargs):
 
 
 @pytest.fixture(autouse=True)
-def _default_platform(monkeypatch):
-    """Pin the platform so these expectations do not depend on the host.
+def _default_backend(monkeypatch):
+    """Pin the backend so these expectations do not depend on the environment.
 
-    The builder picks an Apple Metal profile when `current_platform.is_mps()`
-    is true, so on a macOS arm64 developer machine every assertion here about
-    CUDA defaults would otherwise read the wrong branch.
+    The builder picks an Apple profile when `current_platform.is_mps()` is true,
+    and the MLX profile when `SGLANG_USE_MLX` is set. Without pinning both, this
+    file reads a different branch on a macOS arm64 developer machine, and a
+    different one again when the suite runs under `SGLANG_USE_MLX=1`.
     """
+    import sglang.srt.utils.tensor_bridge as tensor_bridge
+
     from sglang_omni.models.whisper_asr import engine_builder
 
+    monkeypatch.setattr(tensor_bridge, "use_mlx", lambda: False, raising=False)
     monkeypatch.setattr(
         engine_builder.current_platform, "is_mps", lambda: False, raising=False
     )
