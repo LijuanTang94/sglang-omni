@@ -357,9 +357,11 @@ class WhisperMlxModel(nn.Module):
         hidden_states = self.model.decoder(
             input_ids,
             encoder_hidden_states,
+            # create_attention_mask only reads shape[1], and input_ids already
+            # carries the same sequence length, so embedding here would be a
+            # second lookup of rows the decoder is about to fetch anyway.
             mask=create_attention_mask(
-                self.model.decoder.embed_tokens(input_ids),
-                None if cache is None else cache[0][0],
+                input_ids, None if cache is None else cache[0][0]
             ),
             cache=cache,
             offset=offset,
