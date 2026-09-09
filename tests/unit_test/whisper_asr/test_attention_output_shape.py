@@ -58,10 +58,6 @@ def test_cross_attention_flattens_heads_before_out_proj() -> None:
     attn = WhisperSGLangCrossAttention(_config(), layer_id=0)
     attn.attn = _UnflattenedAttention()
 
-    out = attn.forward(
-        torch.randn(TOKENS, D_MODEL),
-        cross_attention_states=None,
-        forward_batch=None,
-    )
+    out = attn.forward(torch.randn(TOKENS, D_MODEL), forward_batch=None)
 
     assert out.shape == (TOKENS, D_MODEL)
