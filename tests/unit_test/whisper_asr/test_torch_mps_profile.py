@@ -24,13 +24,15 @@ def _torch_mps():
         yield
 
 
-def _builder() -> WhisperASREngineBuilder:
+def _builder(device: str = "mps") -> WhisperASREngineBuilder:
     builder = WhisperASREngineBuilder(
         max_running_requests=8,
         max_new_tokens=64,
         mem_fraction_static=0.7,
     )
     builder.context_length = 1860
+    # AsrEngineBuilder.build assigns this; set it directly here.
+    builder.device = device
     return builder
 
 
@@ -132,7 +134,7 @@ def test_cuda_concurrency_is_left_alone() -> None:
         ) as platform,
     ):
         platform.is_mps.return_value = False
-        _builder().adjust_overrides(overrides)
+        _builder(device="cuda:0").adjust_overrides(overrides)
 
     assert overrides["max_running_requests"] == 64
 

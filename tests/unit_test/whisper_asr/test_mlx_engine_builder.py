@@ -23,13 +23,15 @@ def _backend(*, mlx: bool, mps: bool = True):
         yield
 
 
-def _builder() -> WhisperASREngineBuilder:
+def _builder(device: str = "mps") -> WhisperASREngineBuilder:
     builder = WhisperASREngineBuilder(
         max_running_requests=1,
         max_new_tokens=64,
         mem_fraction_static=0.7,
     )
     builder.context_length = 2048
+    # AsrEngineBuilder.build assigns this; set it directly here.
+    builder.device = device
     return builder
 
 
@@ -54,7 +56,7 @@ def test_mlx_defaults_disable_radix_and_graphs() -> None:
 
 def test_cuda_defaults_are_unchanged() -> None:
     with _backend(mlx=False, mps=False):
-        defaults = _builder().generation_defaults(dtype="bfloat16")
+        defaults = _builder(device="cuda:0").generation_defaults(dtype="bfloat16")
 
     assert defaults["disable_cuda_graph"] is False
     assert defaults["enable_torch_compile"] is True

@@ -133,6 +133,8 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         self.context_length = 0
         self.decoder_context_len = 0
         self.audio_encoder_service: Any | None = None
+        # Assigned by AsrEngineBuilder.build before generation_defaults runs.
+        self.device: str | None = None
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         from transformers import AutoConfig, AutoProcessor, GenerationConfig
@@ -240,8 +242,20 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         return bool(use_mlx())
 
     def _uses_torch_mps(self) -> bool:
-        """True on Apple Metal without the opt-in MLX runner."""
-        return not self._uses_mlx() and current_platform.is_mps()
+        """True when this stage runs Torch on Metal, without the MLX runner.
+
+        Keyed off the resolved device rather than ``current_platform``, which is
+        a process-wide singleton: on macOS arm64 it reports MPS even for a stage
+        explicitly placed on CPU, which would then inherit the Metal-only
+        profile. Matches the Qwen3-ASR builder.
+        """
+        import torch
+
+        return (
+            not self._uses_mlx()
+            and self.device is not None
+            and torch.device(self.device).type == "mps"
+        )
 
     def validate_before_infrastructure(self, server_args: Any) -> None:
         """Reject Apple settings the runners cannot honor, before startup.

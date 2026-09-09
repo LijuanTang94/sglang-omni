@@ -40,10 +40,10 @@ def _encoder_graph_builder(**kwargs):
 def _default_backend(monkeypatch):
     """Pin the backend so these expectations do not depend on the environment.
 
-    The builder picks an Apple profile when `current_platform.is_mps()` is true,
-    and the MLX profile when `SGLANG_USE_MLX` is set. Without pinning both, this
-    file reads a different branch on a macOS arm64 developer machine, and a
-    different one again when the suite runs under `SGLANG_USE_MLX=1`.
+    The builder picks the MLX profile when `SGLANG_USE_MLX` is set, and the
+    Torch/MPS profile when the stage resolves onto a Metal device. Without
+    pinning both, this file reads a different branch on a macOS arm64 developer
+    machine, and a different one again under `SGLANG_USE_MLX=1`.
     """
     import sglang.srt.utils.tensor_bridge as tensor_bridge
 
@@ -51,7 +51,10 @@ def _default_backend(monkeypatch):
 
     monkeypatch.setattr(tensor_bridge, "use_mlx", lambda: False, raising=False)
     monkeypatch.setattr(
-        engine_builder.current_platform, "is_mps", lambda: False, raising=False
+        engine_builder.WhisperASREngineBuilder,
+        "_uses_torch_mps",
+        lambda self: False,
+        raising=False,
     )
 
 
