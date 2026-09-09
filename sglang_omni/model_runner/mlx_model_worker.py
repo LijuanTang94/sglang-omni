@@ -161,6 +161,27 @@ class MlxSchedulerModelRunner(ModelRunner):
         )
 
 
+def _qwen3_asr_runner_factory():
+    from sglang_omni.models.qwen3_asr.mlx.runner import make_qwen3_asr_mlx_runner_class
+
+    return make_qwen3_asr_mlx_runner_class
+
+
+def _whisper_runner_factory():
+    from sglang_omni.models.whisper_asr.mlx.runner import make_whisper_mlx_runner_class
+
+    return make_whisper_mlx_runner_class
+
+
+# Architecture -> a callable returning that model's runner-class factory. The
+# indirection keeps the model imports lazy, so the membership check above can
+# run on a host with no MLX installed.
+_MLX_RUNNER_FACTORIES = {
+    "Qwen3ASRForConditionalGeneration": _qwen3_asr_runner_factory,
+    "WhisperForConditionalGeneration": _whisper_runner_factory,
+}
+
+
 def create_mlx_model_worker(
     *,
     config: Any,
@@ -169,6 +190,15 @@ def create_mlx_model_worker(
     tp_rank: int = 0,
 ):
     """Construct an MLX worker with the same scheduler-facing contract as Omni."""
+    # Reject before importing anything: the MLX backend modules below are absent
+    # on a non-Apple host, so an unsupported architecture would surface as an
+    # ImportError instead of this message.
+    if config.model_arch_override not in _MLX_RUNNER_FACTORIES:
+        raise NotImplementedError(
+            "Omni's MLX worker currently supports only "
+            + ", ".join(sorted(_MLX_RUNNER_FACTORIES))
+        )
+
     from sglang.srt.distributed.parallel_state_wrapper import ParallelState
     from sglang.srt.hardware_backend.mlx.model_runner_stub import MlxModelRunnerStub
     from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
@@ -176,20 +206,7 @@ def create_mlx_model_worker(
     from sglang.srt.runtime_context import publish
     from sglang.srt.server_args import PortArgs
 
-    if config.model_arch_override == "Qwen3ASRForConditionalGeneration":
-        from sglang_omni.models.qwen3_asr.mlx.runner import (
-            make_qwen3_asr_mlx_runner_class as make_runner_class,
-        )
-    elif config.model_arch_override == "WhisperForConditionalGeneration":
-        from sglang_omni.models.whisper_asr.mlx.runner import (
-            make_whisper_mlx_runner_class as make_runner_class,
-        )
-    else:
-        raise NotImplementedError(
-            "Omni's MLX worker currently supports only "
-            "Qwen3ASRForConditionalGeneration and "
-            "WhisperForConditionalGeneration"
-        )
+    make_runner_class = _MLX_RUNNER_FACTORIES[config.model_arch_override]()
 
     class OmniMlxWorker(MlxTpModelWorker):
         @property

@@ -126,3 +126,30 @@ def test_mlx_worker_dispatch_accepts_whisper_and_rejects_others() -> None:
     message = str(excinfo.value)
     assert "Qwen3ASRForConditionalGeneration" in message
     assert "WhisperForConditionalGeneration" in message
+
+
+def test_mlx_worker_rejects_before_importing_the_mlx_backend() -> None:
+    """The gate has to run before the MLX imports, not after.
+
+    Those modules are absent on a non-Apple host, so checking afterwards turns a
+    clear NotImplementedError into an ImportError for anyone who passes an
+    unsupported architecture.
+    """
+    import builtins
+
+    from sglang_omni.model_runner.mlx_model_worker import create_mlx_model_worker
+
+    real_import = builtins.__import__
+
+    def _no_mlx(name, *args, **kwargs):
+        if "hardware_backend.mlx" in name or name.startswith("mlx"):
+            raise ImportError(f"simulated missing backend: {name}")
+        return real_import(name, *args, **kwargs)
+
+    with mock.patch.object(builtins, "__import__", _no_mlx):
+        with pytest.raises(NotImplementedError):
+            create_mlx_model_worker(
+                config=SimpleNamespace(model_arch_override="SomeOtherModel"),
+                server_args=SimpleNamespace(),
+                gpu_id=0,
+            )
