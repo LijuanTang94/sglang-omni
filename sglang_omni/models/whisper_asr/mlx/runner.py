@@ -21,6 +21,8 @@ from unittest import mock
 
 import mlx.core as mx
 
+from sglang_omni.model_runner.audio_mlx import AudioMlxModelRunner
+
 logger = logging.getLogger(__name__)
 
 _RUNNER_MODULE = "sglang.srt.hardware_backend.mlx.model_runner"
@@ -55,16 +57,27 @@ def _declared_cache_layout():
         yield
 
 
-class WhisperMlxModelRunner:
+class WhisperMlxModelRunner(AudioMlxModelRunner):
     """Whisper support layered on SGLang's native MLX model runner.
 
-    The base runner keeps ownership of pool sizing and request bookkeeping.
-    This mixin supplies the model, the encoder-decoder cache shape, the audio
-    prefill, and single-request decode: the batched decode path reads
-    ``caches[i][layer].offset`` straight off the layer entry, which here is a
-    ``CacheList`` pair, and its shared KV pool has no room for the
-    cross-attention half.
+    The SGLang base runner keeps ownership of pool sizing and request
+    bookkeeping. ``AudioMlxModelRunner`` supplies the audio-item lookup, the
+    tensor conversion and the chained decode step.
+
+    Its prefill does not carry over. That path expects audio to arrive as
+    contiguous placeholder tokens spliced into ``inputs_embeds`` through
+    ``_build_inputs_embeds``, which is the decoder-only shape. Whisper is
+    encoder-decoder: the decoder stream holds no placeholders, and the encoder
+    projection lives in the per-layer cross-attention cache instead.
+
+    ``decode_batch_start`` is also overridden rather than inherited. The shared
+    version falls back to the batched path for anything it cannot handle, and
+    that path reads ``caches[i][layer].offset`` straight off the layer entry —
+    here a ``CacheList`` pair, whose shared KV pool has no room for the
+    cross-attention half. Failing loudly beats failing inside the base.
     """
+
+    model_name = "Whisper"
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         with _declared_cache_layout():
@@ -120,27 +133,6 @@ class WhisperMlxModelRunner:
         """
         del cache
 
-    @staticmethod
-    def _audio_item(req: Any) -> Any:
-        mm_inputs = req.multimodal_inputs
-        if mm_inputs is None:
-            raise ValueError("Whisper MLX prefill requires multimodal inputs")
-        if len(mm_inputs.mm_items) != 1:
-            raise ValueError(
-                "Whisper MLX prefill requires exactly one audio item, got "
-                f"{len(mm_inputs.mm_items)}"
-            )
-        return mm_inputs.mm_items[0]
-
-    @staticmethod
-    def _to_numpy(tensor: Any) -> Any:
-        if hasattr(tensor, "detach"):
-            tensor = tensor.detach().cpu()
-            if str(tensor.dtype) == "torch.bfloat16":
-                tensor = tensor.float()
-            return tensor.numpy()
-        return tensor
-
     def _encoder_token_count(self, req: Any) -> int:
         item = self._audio_item(req)
         extra = getattr(item, "model_specific_data", None) or {}
@@ -172,6 +164,21 @@ class WhisperMlxModelRunner:
         if not token_ids:
             raise ValueError("Whisper MLX prefill got an empty decoder prompt")
         return list(token_ids)
+
+    def _audio_prefill_inputs(self, req: Any, token_ids: list[int]):
+        """Reject the inherited decoder-only prefill inputs.
+
+        ``AudioMlxModelRunner`` builds them by splicing encoder output into
+        ``inputs_embeds`` at the audio placeholder positions. Whisper has no
+        placeholders to splice at and no ``_build_inputs_embeds``; its encoder
+        output goes to the cross-attention cache in ``prefill_start`` instead.
+        Nothing should reach this, so say why rather than fail on a missing
+        model attribute.
+        """
+        raise NotImplementedError(
+            "Whisper builds its prefill from the encoder-decoder path in "
+            "prefill_start, not from spliced audio placeholders"
+        )
 
     def prefill_start(
         self,
@@ -265,28 +272,6 @@ class WhisperMlxModelRunner:
             lazy_tokens=mx.argmax(lazy_logits, axis=-1),
             req_ids=[req_id],
             caches=[cache],
-            lazy_logprobs=None,
-            logprob_spec=None,
-            edit_rows=None,
-        )
-
-    def decode_batch_start_chained(self, prev):
-        if (
-            len(prev.req_ids) != 1
-            or prev.edit_rows is not None
-            or prev.logprob_spec is not None
-        ):
-            return super().decode_batch_start_chained(prev)
-
-        from sglang.srt.hardware_backend.mlx.model_runner import MlxPendingDecode
-
-        lazy_logits = self._decode_with_native_cache(
-            prev.caches, [prev.lazy_tokens[:, None]]
-        )
-        return MlxPendingDecode(
-            lazy_tokens=mx.argmax(lazy_logits, axis=-1),
-            req_ids=prev.req_ids,
-            caches=prev.caches,
             lazy_logprobs=None,
             logprob_spec=None,
             edit_rows=None,

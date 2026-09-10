@@ -135,3 +135,56 @@ def test_audio_item_requires_exactly_one_clip() -> None:
 
     with pytest.raises(ValueError, match="exactly one audio item"):
         runner._audio_item(req)
+
+
+def test_chained_decode_drives_the_cross_attention_cache() -> None:
+    """The chained step comes from AudioMlxModelRunner, not from this module.
+
+    It has to work against Whisper's ``CacheList``: the shared implementation
+    hands the cache to ``_decode_with_native_cache`` without reading
+    ``.offset``, which is exactly the attribute a ``CacheList`` pair lacks. It
+    also has to leave the cross-attention half untouched while the
+    self-attention half grows, so the second token still attends to the audio.
+    """
+    from sglang.srt.hardware_backend.mlx.model_runner import MlxPendingDecode
+
+    runner = _runner()
+    request = _request()
+    # The multimodal pipeline hands the runner a Torch tensor, which is what
+    # AudioMlxModelRunner._to_numpy converts.
+    import torch
+
+    request.multimodal_inputs.mm_items[0].feature = torch.zeros(1, 8, 40)
+
+    pending = runner.prefill_start(
+        req_id="r0",
+        new_token_ids=[50258, 50259, 50360],
+        full_token_ids=[50258, 50259, 50360],
+        prefix_slot_ids=[],
+        new_slot_ids=[],
+        req_pool_idx=0,
+        req=request,
+    )
+    cache = pending.cache
+    cross_keys = cache[0][1][0]
+    self_offset_after_prefill = cache[0][0].offset
+
+    chained = runner.decode_batch_start_chained(
+        MlxPendingDecode(
+            lazy_tokens=pending.lazy_token,
+            req_ids=["r0"],
+            caches=[cache],
+            lazy_logprobs=None,
+            logprob_spec=None,
+            edit_rows=None,
+        )
+    )
+    mx.eval(chained.lazy_tokens)
+
+    assert chained.lazy_tokens.shape == (1,)
+    assert chained.caches == [cache]
+    # self-attention advanced by the one decoded token
+    assert cache[0][0].offset == self_offset_after_prefill + 1
+    # cross-attention is projected once and then fixed
+    assert cache[0][1][0].shape == cross_keys.shape
+    assert mx.array_equal(cache[0][1][0], cross_keys)
