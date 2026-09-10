@@ -317,7 +317,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
 
     @staticmethod
     def _uses_mlx() -> bool:
-        from sglang.srt.utils.tensor_bridge import use_mlx
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         return bool(use_mlx())
 

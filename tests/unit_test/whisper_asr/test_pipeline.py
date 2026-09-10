@@ -52,11 +52,11 @@ def _default_backend(monkeypatch):
     pinning both, this file reads a different branch on a macOS arm64 developer
     machine, and a different one again under `SGLANG_USE_MLX=1`.
     """
-    import sglang.srt.utils.tensor_bridge as tensor_bridge
+    import sglang.srt.hardware_backend.mlx.runtime as mlx_runtime
 
     from sglang_omni.models.whisper_asr import engine_builder
 
-    monkeypatch.setattr(tensor_bridge, "use_mlx", lambda: False, raising=False)
+    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: False)
     monkeypatch.setattr(
         engine_builder.WhisperASREngineBuilder,
         "_uses_torch_mps",

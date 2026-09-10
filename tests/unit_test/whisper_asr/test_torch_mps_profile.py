@@ -15,7 +15,7 @@ from sglang_omni.models.whisper_asr.sglang_model import WhisperForConditionalGen
 @contextlib.contextmanager
 def _torch_mps():
     with (
-        mock.patch("sglang.srt.utils.tensor_bridge.use_mlx", return_value=False),
+        mock.patch("sglang.srt.hardware_backend.mlx.runtime.use_mlx", return_value=False),
         mock.patch(
             "sglang_omni.models.whisper_asr.engine_builder.current_platform"
         ) as platform,
@@ -128,7 +128,7 @@ def test_cuda_concurrency_is_left_alone() -> None:
     overrides = {"max_running_requests": 64, "chunked_prefill_size": 0}
 
     with (
-        mock.patch("sglang.srt.utils.tensor_bridge.use_mlx", return_value=False),
+        mock.patch("sglang.srt.hardware_backend.mlx.runtime.use_mlx", return_value=False),
         mock.patch(
             "sglang_omni.models.whisper_asr.engine_builder.current_platform"
         ) as platform,
@@ -145,7 +145,7 @@ def test_mlx_rejects_sampling() -> None:
     )()
 
     with (
-        mock.patch("sglang.srt.utils.tensor_bridge.use_mlx", return_value=True),
+        mock.patch("sglang.srt.hardware_backend.mlx.runtime.use_mlx", return_value=True),
         mock.patch(
             "sglang_omni.models.whisper_asr.engine_builder.current_platform"
         ) as platform,

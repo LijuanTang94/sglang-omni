@@ -14,7 +14,7 @@ from sglang_omni.models.whisper_asr.engine_builder import WhisperASREngineBuilde
 @contextlib.contextmanager
 def _backend(*, mlx: bool, mps: bool = True):
     with (
-        mock.patch("sglang.srt.utils.tensor_bridge.use_mlx", return_value=mlx),
+        mock.patch("sglang.srt.hardware_backend.mlx.runtime.use_mlx", return_value=mlx),
         mock.patch(
             "sglang_omni.models.whisper_asr.engine_builder.current_platform"
         ) as platform,
