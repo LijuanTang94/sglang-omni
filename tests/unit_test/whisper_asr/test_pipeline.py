@@ -61,7 +61,6 @@ def _default_backend(monkeypatch):
         engine_builder.WhisperASREngineBuilder,
         "_uses_torch_mps",
         lambda self: False,
-        raising=False,
     )
 
 
@@ -307,9 +306,8 @@ def test_whisper_asr_config_uses_single_batched_stage() -> None:
     assert stage.factory_path.endswith("create_sglang_whisper_asr_executor")
     assert stage.engine.max_running_requests == 64
     factory = stage.factory
-    # None lets the builder resolve the device from the active platform;
-    # a pinned cuda:0 sends non-CUDA backends into torch.cuda.set_device.
     assert factory.device is None
+    assert stage.gpu == 0
     assert factory.enable_encoder_cuda_graph is True
     assert factory.request_build_max_workers == 8
     assert factory.enable_async_decode is True
