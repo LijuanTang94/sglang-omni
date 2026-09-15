@@ -315,28 +315,6 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             service.pin_host_memory,
         )
 
-    @staticmethod
-    def _uses_mlx() -> bool:
-        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
-
-        return bool(use_mlx())
-
-    def _uses_torch_mps(self) -> bool:
-        """True when this stage runs Torch on Metal, without the MLX runner.
-
-        Keyed off the resolved device rather than ``current_platform``, which is
-        a process-wide singleton: on macOS arm64 it reports MPS even for a stage
-        explicitly placed on CPU, which would then inherit the Metal-only
-        profile. Matches the Qwen3-ASR builder.
-        """
-        import torch
-
-        return (
-            not self._uses_mlx()
-            and self.device is not None
-            and torch.device(self.device).type == "mps"
-        )
-
     def validate_before_infrastructure(self, server_args: Any) -> None:
         """Reject Apple settings the runners cannot honor, before startup.
 
