@@ -8,8 +8,11 @@ from unittest import mock
 import pytest
 import torch
 
+from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.models.whisper_asr.engine_builder import WhisperASREngineBuilder
-from sglang_omni.models.whisper_asr.sglang_model import WhisperForConditionalGeneration
+from sglang_omni.models.whisper_asr.torch_mps_runner import (
+    WhisperTorchMpsModelRunner,
+)
 
 
 @contextlib.contextmanager
@@ -68,47 +71,59 @@ def test_torch_mps_bounds_the_kv_pool_to_the_model_context() -> None:
     assert defaults["enable_torch_compile"] is False
 
 
-def test_forward_runs_with_grad_disabled() -> None:
+def test_torch_mps_runner_disables_grad() -> None:
     """Omni's scheduler loops lack SGLang's @DynamicGradMode().
 
-    Without a guard here every request retains its autograd graph, which on
-    Apple Metal is ~4.6 GB of live tensors per request for large-v3.
+    Without a guard on the step every request retains its autograd graph, which
+    on Apple Metal is ~4.6 GB of live tensors per request for large-v3.
     """
-    model = WhisperForConditionalGeneration.__new__(WhisperForConditionalGeneration)
+    runner = object.__new__(WhisperTorchMpsModelRunner)
     observed: dict[str, bool] = {}
 
     def _record(*args, **kwargs):
         observed["grad_enabled"] = torch.is_grad_enabled()
         return None
 
-    model._forward = _record
-
-    with torch.enable_grad():
-        assert torch.is_grad_enabled()
-        model.forward(input_ids=None, positions=None, forward_batch=None)
+    with mock.patch.object(ModelRunner, "_prepare_and_forward", _record):
+        with torch.enable_grad():
+            assert torch.is_grad_enabled()
+            runner._prepare_and_forward(None, None, [], True)
 
     assert observed["grad_enabled"] is False
 
 
-def test_forward_guard_uses_no_grad_not_inference_mode() -> None:
+def test_torch_mps_runner_uses_no_grad_not_inference_mode() -> None:
     """inference_mode taints its outputs; the sampler mutates these logits.
 
-    Using it here raises "Inplace update to inference tensor outside
-    InferenceMode is not allowed" once sampling runs.
+    The guarded scope reaches the sample-before-post block, so inference_mode
+    would raise "Inplace update to inference tensor outside InferenceMode is
+    not allowed" once sampling runs.
     """
-    model = WhisperForConditionalGeneration.__new__(WhisperForConditionalGeneration)
+    runner = object.__new__(WhisperTorchMpsModelRunner)
 
     def _make_tensor(*args, **kwargs):
         return torch.zeros(2)
 
-    model._forward = _make_tensor
-
-    with torch.enable_grad():
-        out = model.forward(input_ids=None, positions=None, forward_batch=None)
+    with mock.patch.object(ModelRunner, "_prepare_and_forward", _make_tensor):
+        with torch.enable_grad():
+            out = runner._prepare_and_forward(None, None, [], True)
 
     # An inference-mode tensor cannot be mutated afterwards; a no_grad one can.
     out.add_(1.0)
     assert pytest.approx(out.tolist()) == [1.0, 1.0]
+
+
+def test_torch_mps_path_builds_its_own_runner() -> None:
+    """The guard lives in the runner, so the Torch/MPS path has to install it."""
+    with (
+        _torch_mps(),
+        mock.patch(
+            "sglang_omni.models.whisper_asr.torch_mps_runner.WhisperTorchMpsModelRunner"
+        ) as runner_cls,
+    ):
+        made = _builder().make_model_runner(mock.Mock(), mock.Mock())
+
+    assert made is runner_cls.return_value
 
 
 def test_apple_paths_clamp_concurrency_to_one() -> None:

@@ -130,7 +130,7 @@ def _resolve_encoder_graph_buckets(
     if max_running_requests is not None:
         if max_running_requests < 1:
             raise ValueError(
-                "max_running_requests must be >= 1, " f"got {max_running_requests}"
+                f"max_running_requests must be >= 1, got {max_running_requests}"
             )
         capture_limit = min(capture_limit, max_running_requests)
     resolved = {bucket for bucket in buckets if bucket <= capture_limit}
@@ -447,6 +447,12 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             )
 
             return MlxSchedulerModelRunner(model_worker, output_proc)
+        if self._uses_torch_mps():
+            from sglang_omni.models.whisper_asr.torch_mps_runner import (
+                WhisperTorchMpsModelRunner,
+            )
+
+            return WhisperTorchMpsModelRunner(model_worker, output_proc)
         return super().make_model_runner(model_worker, output_proc)
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
