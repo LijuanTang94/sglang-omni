@@ -11,12 +11,8 @@ from sglang_omni.model_runner.base import ModelRunner
 class WhisperTorchMpsModelRunner(ModelRunner):
     """Whisper's Torch/MPS step, with grad held off across the whole step.
 
-    Omni's scheduler loops do not carry SGLang's ``@DynamicGradMode()``, so
-    without this every request retains its autograd graph: ~4.6 GB of live
-    tensors per request for large-v3, which exhausts the MPS watermark after
-    five. ``no_grad`` rather than ``inference_mode`` because this scope covers
-    the sample-before-post block, and the sampler updates logits that
-    ``inference_mode`` would not let it touch.
+    Omni's scheduler loops do not carry SGLang's DynamicGradMode, so each
+    request would otherwise retain its autograd graph.
     """
 
     model_name = "Whisper"

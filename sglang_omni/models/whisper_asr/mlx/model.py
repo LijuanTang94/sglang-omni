@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Structure follows the Qwen3-ASR MLX path in
 # sglang_omni/models/qwen3_asr/mlx/model.py. Module attribute names mirror the
-# official ``openai/whisper-*`` checkpoint keys so weights load without a
+# official openai/whisper-* checkpoint keys so weights load without a
 # rename table.
 
 from __future__ import annotations
@@ -146,7 +146,7 @@ class WhisperEncoder(nn.Module):
         super().__init__()
         self.config = config
         # MLX convolutions are NLC; the PyTorch checkpoint stores NCL kernels,
-        # which `WhisperMlxModel.sanitize` transposes on load.
+        # which WhisperMlxModel.sanitize transposes on load.
         self.conv1 = nn.Conv1d(
             config.num_mel_bins, config.d_model, kernel_size=3, padding=1
         )
