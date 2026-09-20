@@ -68,7 +68,7 @@ def test_runner_constructs_despite_missing_rope() -> None:
     """SGLang's discovery rejects Whisper; the declared layout must replace it.
 
     Without it, MlxModelRunner.__init__ raises "MLX model has no supported
-    attention layers" because no Whisper attention module exposes ``rope``.
+    attention layers" because no Whisper attention module exposes rope.
     """
     runner = _runner()
 
@@ -110,7 +110,7 @@ def test_decoder_prompt_drops_the_encoder_placeholders() -> None:
     prompt = [50258, 50259, 50360]
     token_ids = [PAD_TOKEN_ID] * ENCODER_TOKENS + prompt
 
-    assert runner._decoder_prompt_ids(_request(), token_ids) == prompt
+    assert runner.decoder_prompt_ids(_request(), token_ids) == prompt
 
 
 def test_decoder_prompt_passes_through_when_already_stripped() -> None:
@@ -118,14 +118,14 @@ def test_decoder_prompt_passes_through_when_already_stripped() -> None:
     runner = _runner()
     prompt = [50258, 50259, 50360]
 
-    assert runner._decoder_prompt_ids(_request(), prompt) == prompt
+    assert runner.decoder_prompt_ids(_request(), prompt) == prompt
 
 
 def test_decoder_prompt_rejects_an_empty_prompt() -> None:
     runner = _runner()
 
     with pytest.raises(ValueError, match="empty decoder prompt"):
-        runner._decoder_prompt_ids(_request(), [])
+        runner.decoder_prompt_ids(_request(), [])
 
 
 def test_audio_item_requires_exactly_one_clip() -> None:
@@ -134,15 +134,15 @@ def test_audio_item_requires_exactly_one_clip() -> None:
     req.multimodal_inputs.mm_items.append(object())
 
     with pytest.raises(ValueError, match="exactly one audio item"):
-        runner._audio_item(req)
+        runner.audio_item(req)
 
 
 def test_chained_decode_drives_the_cross_attention_cache() -> None:
     """The chained step comes from AudioMlxModelRunner, not from this module.
 
-    It has to work against Whisper's ``CacheList``: the shared implementation
-    hands the cache to ``_decode_with_native_cache`` without reading
-    ``.offset``, which is exactly the attribute a ``CacheList`` pair lacks. It
+    It has to work against Whisper's CacheList: the shared implementation
+    hands the cache to _decode_with_native_cache without reading
+    .offset, which is exactly the attribute a CacheList pair lacks. It
     also has to leave the cross-attention half untouched while the
     self-attention half grows, so the second token still attends to the audio.
     """
@@ -151,7 +151,7 @@ def test_chained_decode_drives_the_cross_attention_cache() -> None:
     runner = _runner()
     request = _request()
     # The multimodal pipeline hands the runner a Torch tensor, which is what
-    # AudioMlxModelRunner._to_numpy converts.
+    # AudioMlxModelRunner.to_numpy converts.
     import torch
 
     request.multimodal_inputs.mm_items[0].feature = torch.zeros(1, 8, 40)

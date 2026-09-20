@@ -18,7 +18,7 @@ class WhisperTorchMpsModelRunner(ModelRunner):
     model_name = "Whisper"
 
     @torch.no_grad()
-    def _prepare_and_forward(
+    def prepare_and_forward(
         self,
         forward_batch,
         schedule_batch,
@@ -27,7 +27,7 @@ class WhisperTorchMpsModelRunner(ModelRunner):
         *,
         is_lookahead: bool = False,
     ):
-        return super()._prepare_and_forward(
+        return super().prepare_and_forward(
             forward_batch,
             schedule_batch,
             requests,

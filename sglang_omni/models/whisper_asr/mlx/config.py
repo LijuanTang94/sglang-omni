@@ -15,7 +15,7 @@ class ModelConfig:
 
     Whisper's Hugging Face config is flat, so a single dataclass covers both
     the audio encoder and the text decoder. Defaults match
-    ``openai/whisper-large-v3``.
+    openai/whisper-large-v3.
     """
 
     model_type: str = "whisper"

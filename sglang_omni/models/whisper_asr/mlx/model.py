@@ -19,7 +19,7 @@ from .config import ModelConfig
 class WhisperAttention(nn.Module):
     """Multi-headed attention shared by the Whisper encoder and decoder.
 
-    Whisper omits the key projection bias, so ``k_proj`` is built without one.
+    Whisper omits the key projection bias, so k_proj is built without one.
     Doing that here (rather than zero-filling a fused QKV shard, as the CUDA
     path does) keeps the module names identical to the checkpoint keys.
     """
@@ -47,7 +47,7 @@ class WhisperAttention(nn.Module):
         self.v_proj = nn.Linear(embed_dim, embed_dim, bias=True)
         self.out_proj = nn.Linear(embed_dim, embed_dim, bias=True)
 
-    def _shape(self, states: mx.array) -> mx.array:
+    def split_heads(self, states: mx.array) -> mx.array:
         bsz, seq_len, _ = states.shape
         return states.reshape(bsz, seq_len, self.num_heads, self.head_dim).transpose(
             0, 2, 1, 3
@@ -64,22 +64,22 @@ class WhisperAttention(nn.Module):
         """Run attention, caching keys and values according to their lifetime.
 
         Self-attention keys and values grow one step per decoded token, so they
-        use a ``KVCache`` that appends. Cross-attention keys and values are a
+        use a KVCache that appends. Cross-attention keys and values are a
         projection of the encoder output, which never changes during decoding,
-        so they are projected once into an ``ArraysCache`` and reused. Mixing
+        so they are projected once into an ArraysCache and reused. Mixing
         the two would either recompute the encoder projection every step or
         append to a sequence that should stay fixed.
 
-        ``is_cross`` is explicit rather than inferred from ``key_value_states``
+        is_cross is explicit rather than inferred from key_value_states
         because decode steps reach cross-attention with no encoder output in
         hand: by then the projection is already cached.
         """
         bsz, seq_len, _ = hidden_states.shape
-        query_states = self._shape(self.q_proj(hidden_states) * self.scaling)
+        query_states = self.split_heads(self.q_proj(hidden_states) * self.scaling)
 
         if not is_cross:
-            key_states = self._shape(self.k_proj(hidden_states))
-            value_states = self._shape(self.v_proj(hidden_states))
+            key_states = self.split_heads(self.k_proj(hidden_states))
+            value_states = self.split_heads(self.v_proj(hidden_states))
             if cache is not None:
                 key_states, value_states = cache.update_and_fetch(
                     key_states, value_states
@@ -92,8 +92,8 @@ class WhisperAttention(nn.Module):
                 "populated; pass encoder_hidden_states on the prefill call"
             )
         else:
-            key_states = self._shape(self.k_proj(key_value_states))
-            value_states = self._shape(self.v_proj(key_value_states))
+            key_states = self.split_heads(self.k_proj(key_value_states))
+            value_states = self.split_heads(self.v_proj(key_value_states))
             if cache is not None:
                 cache[0], cache[1] = key_states, value_states
 
@@ -138,7 +138,7 @@ class WhisperEncoder(nn.Module):
 
     Unlike Qwen3-ASR's encoder this one has no windowing or ragged block mask:
     Whisper always consumes a fixed 30 s mel window, so the convolution stack
-    emits exactly ``max_source_positions`` frames and every position attends to
+    emits exactly max_source_positions frames and every position attends to
     every other one.
     """
 
@@ -163,7 +163,7 @@ class WhisperEncoder(nn.Module):
         """Encode a mel spectrogram.
 
         Args:
-            input_features: ``(batch, num_mel_bins, frames)`` to match the
+            input_features: (batch, num_mel_bins, frames) to match the
                 PyTorch feature extractor's output. Transposed to MLX's NLC
                 layout internally.
         """
@@ -192,7 +192,7 @@ class WhisperEncoder(nn.Module):
 class WhisperDecoderLayer(nn.Module):
     """A Whisper decoder block: self-attention, cross-attention, feed-forward.
 
-    The cross-attention module is named ``encoder_attn`` to match the
+    The cross-attention module is named encoder_attn to match the
     checkpoint keys.
     """
 
@@ -268,7 +268,7 @@ class WhisperDecoder(nn.Module):
         """Decode one or more tokens.
 
         Args:
-            offset: index of ``input_ids[:, 0]`` in the full output sequence, so
+            offset: index of input_ids[:, 0] in the full output sequence, so
                 incremental steps pick up the right learned position rows.
         """
         length = input_ids.shape[1]
@@ -289,7 +289,7 @@ class WhisperDecoder(nn.Module):
 
 
 class WhisperInnerModel(nn.Module):
-    """Container matching the checkpoint's ``model.*`` key prefix."""
+    """Container matching the checkpoint's model.* key prefix."""
 
     def __init__(self, config: ModelConfig):
         super().__init__()
@@ -319,8 +319,8 @@ class WhisperMlxModel(nn.Module):
     def make_cache(self) -> List[CacheList]:
         """One cache pair per decoder layer.
 
-        Slot 0 is the self-attention ``KVCache``, which appends a step per
-        decoded token. Slot 1 is a two-entry ``ArraysCache`` holding the
+        Slot 0 is the self-attention KVCache, which appends a step per
+        decoded token. Slot 1 is a two-entry ArraysCache holding the
         cross-attention keys and values, projected once from the encoder output
         and then fixed for the rest of the sequence.
         """
@@ -347,10 +347,10 @@ class WhisperMlxModel(nn.Module):
         cache: Optional[List[Any]] = None,
         offset: Optional[int] = None,
     ) -> mx.array:
-        """Return next-token logits for ``input_ids``.
+        """Return next-token logits for input_ids.
 
         The output projection is tied to the decoder token embedding, which is
-        why Whisper checkpoints carry no ``proj_out`` tensor.
+        why Whisper checkpoints carry no proj_out tensor.
         """
         if offset is None:
             offset = 0 if cache is None else cache[0][0].offset
@@ -373,25 +373,25 @@ class WhisperMlxModel(nn.Module):
     def sanitize(self, weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
         """Convert PyTorch checkpoint layout to MLX layout.
 
-        PyTorch stores Conv1d kernels as ``(out, in, kernel)`` while MLX expects
-        ``(out, kernel, in)``. Re-running this on already-converted weights must
+        PyTorch stores Conv1d kernels as (out, in, kernel) while MLX expects
+        (out, kernel, in). Re-running this on already-converted weights must
         be a no-op, so the decision is made from the module's own expected shape
         rather than from a guess about which axis holds the kernel.
 
-        ``proj_out.weight`` is dropped when present: the output projection is
-        tied to ``model.decoder.embed_tokens``.
+        proj_out.weight is dropped when present: the output projection is
+        tied to model.decoder.embed_tokens.
         """
         sanitized = {}
         for k, v in weights.items():
             if not k.startswith("model."):
                 continue
             if k in self._CONV_WEIGHTS:
-                v = self._to_mlx_conv1d(k, v)
+                v = self.to_mlx_conv1d(k, v)
             sanitized[k] = v
         return sanitized
 
-    def _to_mlx_conv1d(self, key: str, value: mx.array) -> mx.array:
-        """Transpose a Conv1d kernel into MLX's ``(out, kernel, in)`` layout."""
+    def to_mlx_conv1d(self, key: str, value: mx.array) -> mx.array:
+        """Transpose a Conv1d kernel into MLX's (out, kernel, in) layout."""
         conv = self.model.encoder.conv1 if "conv1" in key else self.model.encoder.conv2
         expected = conv.weight.shape
         if value.ndim != 3:

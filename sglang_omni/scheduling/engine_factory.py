@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from numbers import Integral
 from typing import Any, ClassVar
 
+import torch
 from sglang.srt.arg_groups.model_override_base import resolved_view
 
 from sglang_omni.scheduling.generation_batch_policy import (
@@ -23,7 +24,7 @@ from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoi
 logger = logging.getLogger(__name__)
 
 
-def _normalize_context_length(value: Any, *, model_name: str) -> int:
+def normalize_context_length(value: Any, *, model_name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, Integral):
         raise ValueError(
             f"{model_name} context length must be a positive integer, got {value!r}"
@@ -99,7 +100,7 @@ class SGLangGenerationEngineBuilder(ABC):
                 checkpoint_dir,
                 server_args_overrides=server_args_overrides,
             )
-        self.context_length = _normalize_context_length(
+        self.context_length = normalize_context_length(
             context_length,
             model_name=self.model_name,
         )
@@ -223,7 +224,7 @@ class SGLangGenerationEngineBuilder(ABC):
                 model=model,
             )
             self.setup_runtime_resources(model, server_args)
-            scheduler, model_runner = self._build_runtime(
+            scheduler, model_runner = self.build_runtime(
                 model_worker=model_worker,
                 model=model,
                 output_proc=output_proc,
@@ -245,24 +246,22 @@ class SGLangGenerationEngineBuilder(ABC):
         return model_path
 
     @staticmethod
-    def _uses_mlx() -> bool:
+    def uses_mlx() -> bool:
         """True when this process runs the native MLX backend."""
         from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         return bool(use_mlx())
 
-    def _uses_torch_mps(self) -> bool:
+    def uses_torch_mps(self) -> bool:
         """True when this stage runs Torch on Metal, without the MLX runner.
 
-        Keyed off the resolved device rather than ``current_platform``, which is
-        a process-wide singleton: on macOS arm64 it reports MPS even for a stage
+        Keyed off the resolved device rather than current_platform, which is a
+        process-wide singleton: on macOS arm64 it reports MPS even for a stage
         explicitly placed on CPU, which would then inherit the Metal-only
         profile.
         """
-        import torch
-
         return (
-            not self._uses_mlx()
+            not self.uses_mlx()
             and self.device is not None
             and torch.device(self.device).type == "mps"
         )
@@ -355,7 +354,7 @@ class SGLangGenerationEngineBuilder(ABC):
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
         raise NotImplementedError
 
-    def _build_runtime(
+    def build_runtime(
         self,
         *,
         model_worker: Any,
@@ -370,7 +369,7 @@ class SGLangGenerationEngineBuilder(ABC):
         request_builder, result_adapter = self.make_adapters(model)
         scheduler_kwargs = self.extra_scheduler_kwargs()
         model_runner = self.make_model_runner(model_worker, output_proc)
-        scheduler = self._make_scheduler(
+        scheduler = self.make_scheduler(
             model_worker=model_worker,
             tree_cache=tree_cache,
             req_to_token_pool=req_to_token_pool,
@@ -399,7 +398,7 @@ class SGLangGenerationEngineBuilder(ABC):
     def extra_scheduler_kwargs(self) -> dict[str, Any]:
         return {}
 
-    def _make_scheduler(
+    def make_scheduler(
         self,
         *,
         model_worker: Any,
@@ -501,7 +500,7 @@ class TtsEngineBuilder(SGLangGenerationEngineBuilder):
         request_builder: Any,
         result_adapter: Any,
     ) -> Any:
-        return self._make_scheduler(
+        return super().make_scheduler(
             model_worker=model_worker,
             tree_cache=tree_cache,
             req_to_token_pool=req_to_token_pool,
@@ -514,7 +513,7 @@ class TtsEngineBuilder(SGLangGenerationEngineBuilder):
             extra_scheduler_kwargs=self.extra_scheduler_kwargs(),
         )
 
-    def _build_runtime(
+    def build_runtime(
         self,
         *,
         model_worker: Any,

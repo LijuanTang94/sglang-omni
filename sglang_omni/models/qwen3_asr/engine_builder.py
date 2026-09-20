@@ -147,7 +147,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
                 "mem_fraction_static": self.mem_fraction_static,
                 "dtype": dtype,
             }
-        if self._uses_torch_mps():
+        if self.uses_torch_mps():
             # Note (yexiaodong): MPS has no CUDA graph or Triton lifecycle, and
             # the audio embedding sidecar makes split prefill unsafe initially.
             return {
@@ -206,7 +206,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
             )
 
             return MlxSchedulerModelRunner(model_worker, output_proc)
-        if self._uses_torch_mps():
+        if self.uses_torch_mps():
             from sglang_omni.models.qwen3_asr.torch_mps_runner import (
                 Qwen3ASRTorchMpsModelRunner,
             )
@@ -228,7 +228,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         server_args: Any,
     ) -> None:
         del device, gpu_id, server_args
-        if self._uses_torch_mps():
+        if self.uses_torch_mps():
             from sglang_omni.models.qwen3_asr.torch_mps_runner import (
                 install_torch_mps_language_model,
             )
@@ -238,7 +238,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
                 checkpoint_dir,
             )
 
-    def _log_memory_checkpoint(self, checkpoint: str) -> None:
+    def log_memory_checkpoint(self, checkpoint: str) -> None:
         logger.info(
             "Qwen3-ASR memory checkpoint=%s gpu=%d process_gpu_memory=%s",
             checkpoint,
@@ -255,7 +255,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
             raise ValueError(
                 "Qwen3-ASR MLX currently requires mlx_enable_sampling=False"
             )
-        if self._uses_torch_mps() and cfg.max_running_requests != 1:
+        if self.uses_torch_mps() and cfg.max_running_requests != 1:
             raise ValueError(
                 "Qwen3-ASR Torch MPS currently requires max_running_requests=1"
             )
@@ -284,18 +284,18 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
                 f"{getattr(server_args, 'mem_fraction_static', None)}"
             ),
         )
-        self._log_memory_checkpoint("pre_model_load")
+        self.log_memory_checkpoint("pre_model_load")
 
     def validate_after_model_setup(self, model: Any, server_args: Any) -> None:
         del model, server_args
-        self._log_memory_checkpoint("post_static_allocation")
+        self.log_memory_checkpoint("post_static_allocation")
 
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
         from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         if "context_length" in overrides:
             self.context_length = int(overrides.pop("context_length"))
-        if use_mlx() or self._uses_torch_mps():
+        if use_mlx() or self.uses_torch_mps():
             # Note (yexiaodong): Typed pipeline engine defaults are merged after
             # the backend profile and otherwise re-enable Torch compilation.
             overrides["enable_torch_compile"] = False
@@ -316,14 +316,14 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
             # Note (yexiaodong): Native MLX prefill owns audio encoding, so the
             # Torch pre-LM service and its CUDA graphs must remain uninitialized.
             return
-        if self._uses_torch_mps():
+        if self.uses_torch_mps():
             # Note (yexiaodong): Torch MPS encodes audio inside model prefill,
             # while the pre-LM service owns CUDA-only streams and graphs. The
             # shared multimodal routine still requires its cache singleton.
             init_mm_embedding_cache(self.mm_embedding_cache_size_bytes)
             return
         del generation_cuda_graph_enabled
-        self._log_memory_checkpoint("post_cuda_graph_capture")
+        self.log_memory_checkpoint("post_cuda_graph_capture")
         if self.enable_encoder_cuda_graph:
             from sglang_omni.models.qwen3_asr.audio_lengths import (
                 qwen3_asr_num_audio_tokens,
@@ -340,7 +340,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
                 max_batch_size=self.pre_lm_max_batch_size,
                 max_tokens_per_clip=max_tokens_per_clip,
             )
-            self._log_memory_checkpoint("post_encoder_graph_capture")
+            self.log_memory_checkpoint("post_encoder_graph_capture")
         init_mm_embedding_cache(self.mm_embedding_cache_size_bytes)
         if self.enable_pre_lm_encoder:
             # note (luojiaxuan): constructed after SGLang's generation CUDA
@@ -380,7 +380,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
             context_length=self.context_length,
             audio_encoder_service=self.audio_encoder_service,
             should_wait_for_encode=self.should_wait_for_encode,
-            greedy_only=use_mlx() or self._uses_torch_mps(),
+            greedy_only=use_mlx() or self.uses_torch_mps(),
         )
 
     def make_abort_callback(self) -> Any | None:
@@ -403,7 +403,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
             self.audio_encoder_service = None
 
     def extra_scheduler_kwargs(self) -> dict[str, Any]:
-        use_torch_mps = self._uses_torch_mps()
+        use_torch_mps = self.uses_torch_mps()
         return {
             "stream_output_builder": request_builders.make_qwen3_asr_stream_output_builder(
                 tokenizer=self.tokenizer,

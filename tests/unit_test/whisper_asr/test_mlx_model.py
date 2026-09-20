@@ -222,7 +222,7 @@ def test_incremental_decode_matches_full_sequence() -> None:
 
 
 def test_call_decodes_without_the_encoder_output() -> None:
-    """SGLang's MLX runner decodes with ``model(input_ids, cache=cache)``.
+    """SGLang's MLX runner decodes with model(input_ids, cache=cache).
 
     It has no encoder output to pass, so once prefill has filled the
     cross-attention cache the model must decode from tokens alone and give the

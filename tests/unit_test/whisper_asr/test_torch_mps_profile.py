@@ -10,9 +10,7 @@ import torch
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.models.whisper_asr.engine_builder import WhisperASREngineBuilder
-from sglang_omni.models.whisper_asr.torch_mps_runner import (
-    WhisperTorchMpsModelRunner,
-)
+from sglang_omni.models.whisper_asr.torch_mps_runner import WhisperTorchMpsModelRunner
 
 
 @contextlib.contextmanager
@@ -84,10 +82,10 @@ def test_torch_mps_runner_disables_grad() -> None:
         observed["grad_enabled"] = torch.is_grad_enabled()
         return None
 
-    with mock.patch.object(ModelRunner, "_prepare_and_forward", _record):
+    with mock.patch.object(ModelRunner, "prepare_and_forward", _record):
         with torch.enable_grad():
             assert torch.is_grad_enabled()
-            runner._prepare_and_forward(None, None, [], True)
+            runner.prepare_and_forward(None, None, [], True)
 
     assert observed["grad_enabled"] is False
 
@@ -104,9 +102,9 @@ def test_torch_mps_runner_uses_no_grad_not_inference_mode() -> None:
     def _make_tensor(*args, **kwargs):
         return torch.zeros(2)
 
-    with mock.patch.object(ModelRunner, "_prepare_and_forward", _make_tensor):
+    with mock.patch.object(ModelRunner, "prepare_and_forward", _make_tensor):
         with torch.enable_grad():
-            out = runner._prepare_and_forward(None, None, [], True)
+            out = runner.prepare_and_forward(None, None, [], True)
 
     # An inference-mode tensor cannot be mutated afterwards; a no_grad one can.
     out.add_(1.0)

@@ -29,7 +29,7 @@ _DECODER_PREFILL_TOKENS_PER_REQUEST = (
 )
 
 
-def _max_reachable_decoder_prefill_tokens(
+def max_reachable_decoder_prefill_tokens(
     *,
     budget: int,
     encoder_token_count: int,
@@ -62,7 +62,7 @@ def _max_reachable_decoder_prefill_tokens(
     return max(_DECODER_PREFILL_TOKENS_PER_REQUEST, lower_cap, upper_cap)
 
 
-def _reachable_prefill_cuda_graph_max_bs(
+def reachable_prefill_cuda_graph_max_bs(
     overrides: dict[str, Any],
     *,
     encoder_token_count: int,
@@ -82,7 +82,7 @@ def _reachable_prefill_cuda_graph_max_bs(
         request_limit = min(request_limit, int(max_running_requests))
 
     caps = [
-        _max_reachable_decoder_prefill_tokens(
+        max_reachable_decoder_prefill_tokens(
             budget=budget,
             encoder_token_count=encoder_token_count,
             request_limit=request_limit,
@@ -97,13 +97,13 @@ def _reachable_prefill_cuda_graph_max_bs(
     return cap
 
 
-def _normalize_encoder_graph_buckets(buckets: list[int] | None) -> tuple[int, ...]:
+def normalize_encoder_graph_buckets(buckets: list[int] | None) -> tuple[int, ...]:
     values = _DEFAULT_ENCODER_GRAPH_BATCH_BUCKETS if buckets is None else buckets
     normalized = {int(value) for value in values}
     return tuple(sorted(value for value in normalized if value >= 1))
 
 
-def _resolve_encoder_graph_buckets(
+def resolve_encoder_graph_buckets(
     buckets: tuple[int, ...],
     *,
     enable_pre_lm_encoder: bool,
@@ -181,7 +181,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         self.mem_fraction_static = mem_fraction_static
         self.enable_encoder_cuda_graph = bool(enable_encoder_cuda_graph)
         self._using_default_encoder_graph_buckets = encoder_graph_batch_buckets is None
-        self.encoder_graph_batch_buckets = _normalize_encoder_graph_buckets(
+        self.encoder_graph_batch_buckets = normalize_encoder_graph_buckets(
             encoder_graph_batch_buckets
         )
         self.enable_async_decode = enable_async_decode
@@ -248,7 +248,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
 
         max_prefill_tokens = int(get_schedule().max_prefill_tokens)
         max_running_requests = int(get_schedule().max_running_requests)
-        resolved_buckets = _resolve_encoder_graph_buckets(
+        resolved_buckets = resolve_encoder_graph_buckets(
             self.encoder_graph_batch_buckets,
             enable_pre_lm_encoder=self.enable_pre_lm_encoder,
             pre_lm_max_batch_size=self.pre_lm_max_batch_size,
@@ -278,7 +278,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
 
     def setup_runtime_resources(self, model: Any, server_args: Any) -> None:
         del server_args
-        if self._uses_mlx():
+        if self.uses_mlx():
             # The pre-LM service caches Torch encoder states and drives encoder
             # CUDA graphs. On MLX the runner owns encoding, and its output goes
             # straight into the per-request cross-attention cache.
@@ -324,7 +324,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         """
         # The Apple check runs first so the error names the setting to change,
         # where the shared batch policy would report a generic mismatch.
-        if self._uses_mlx() and getattr(server_args, "mlx_enable_sampling", False):
+        if self.uses_mlx() and getattr(server_args, "mlx_enable_sampling", False):
             raise ValueError("Whisper MLX currently requires mlx_enable_sampling=False")
         super().validate_before_infrastructure(server_args)
 
@@ -339,8 +339,8 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         # per-request processor; this flag permits SGLang to execute it.
         # The MLX path decodes greedily and rejects logit editing in
         # prefill_start, so leave the flag off rather than advertising support.
-        overrides["enable_custom_logit_processor"] = not self._uses_mlx()
-        if self._uses_mlx() or self._uses_torch_mps():
+        overrides["enable_custom_logit_processor"] = not self.uses_mlx()
+        if self.uses_mlx() or self.uses_torch_mps():
             # Both Apple paths decode one request at a time. This has to
             # happen here rather than in generation_defaults, because the
             # stage's own EngineArgs take precedence over those defaults and
@@ -350,7 +350,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
                 logger.warning(
                     "Whisper %s decodes one request at a time; overriding "
                     "max_running_requests=%s with 1",
-                    "MLX" if self._uses_mlx() else "Torch MPS",
+                    "MLX" if self.uses_mlx() else "Torch MPS",
                     requested,
                 )
             overrides["max_running_requests"] = 1
@@ -367,7 +367,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         ):
             return
 
-        cap = _reachable_prefill_cuda_graph_max_bs(
+        cap = reachable_prefill_cuda_graph_max_bs(
             overrides,
             encoder_token_count=self.encoder_token_count,
             max_running_requests=overrides.get("max_running_requests"),
@@ -377,7 +377,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         overrides["cuda_graph_bs_prefill"] = build_default_prefill_cuda_graph_bs(cap)
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
-        if self._uses_mlx():
+        if self.uses_mlx():
             if not current_platform.is_mps():
                 raise RuntimeError("SGLANG_USE_MLX=1 requires the Apple Metal platform")
             # The encoder output lives in the MLX prefill's cross-attention
@@ -403,7 +403,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
                 "mm_attention_backend": "sdpa",
                 "dtype": dtype,
             }
-        if self._uses_torch_mps():
+        if self.uses_torch_mps():
             # Metal has no CUDA graph or Triton lifecycle, and the flashinfer
             # default is absent too: it fails at import with "name
             # 'BatchPrefillWithRaggedKVCacheWrapper' is not defined".
@@ -441,13 +441,13 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         }
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
-        if self._uses_mlx():
+        if self.uses_mlx():
             from sglang_omni.model_runner.mlx_model_worker import (
                 MlxSchedulerModelRunner,
             )
 
             return MlxSchedulerModelRunner(model_worker, output_proc)
-        if self._uses_torch_mps():
+        if self.uses_torch_mps():
             from sglang_omni.models.whisper_asr.torch_mps_runner import (
                 WhisperTorchMpsModelRunner,
             )
