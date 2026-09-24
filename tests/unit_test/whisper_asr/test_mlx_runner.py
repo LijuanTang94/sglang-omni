@@ -51,8 +51,6 @@ def _runner() -> WhisperMlxModelRunner:
 
 
 def _request(num_audio_tokens: int = ENCODER_TOKENS) -> SimpleNamespace:
-    # Mirrors what the shared request builder attaches: the encoder token count
-    # rides in model_specific_data, not as a field on the item.
     item = SimpleNamespace(
         feature=None,
         model_specific_data={"num_audio_tokens": num_audio_tokens},
@@ -65,11 +63,7 @@ def _request(num_audio_tokens: int = ENCODER_TOKENS) -> SimpleNamespace:
 
 
 def test_runner_constructs_despite_missing_rope() -> None:
-    """SGLang's discovery rejects Whisper; the declared layout must replace it.
-
-    Without it, MlxModelRunner.__init__ raises "MLX model has no supported
-    attention layers" because no Whisper attention module exposes rope.
-    """
+    """SGLang's discovery rejects Whisper; the declared layout must replace it."""
     runner = _runner()
 
     layout = runner._cache_layout
@@ -101,11 +95,7 @@ def test_cache_has_both_lifetimes_per_layer() -> None:
 
 
 def test_decoder_prompt_drops_the_encoder_placeholders() -> None:
-    """The shared request builder prefixes pad ids for the CUDA KV reservation.
-
-    Decoding those placeholders would emit tokens from meaningless positions,
-    since this path holds the encoder projection in its own cross cache.
-    """
+    """The shared request builder prefixes pad ids for the CUDA KV reservation."""
     runner = _runner()
     prompt = [50258, 50259, 50360]
     token_ids = [PAD_TOKEN_ID] * ENCODER_TOKENS + prompt
@@ -138,20 +128,11 @@ def test_audio_item_requires_exactly_one_clip() -> None:
 
 
 def test_chained_decode_drives_the_cross_attention_cache() -> None:
-    """The chained step comes from AudioMlxModelRunner, not from this module.
-
-    It has to work against Whisper's CacheList: the shared implementation
-    hands the cache to _decode_with_native_cache without reading
-    .offset, which is exactly the attribute a CacheList pair lacks. It
-    also has to leave the cross-attention half untouched while the
-    self-attention half grows, so the second token still attends to the audio.
-    """
+    """The chained step comes from AudioMlxModelRunner, not from this module."""
     from sglang.srt.hardware_backend.mlx.model_runner import MlxPendingDecode
 
     runner = _runner()
     request = _request()
-    # The multimodal pipeline hands the runner a Torch tensor, which is what
-    # AudioMlxModelRunner.to_numpy converts.
     import torch
 
     request.multimodal_inputs.mm_items[0].feature = torch.zeros(1, 8, 40)
@@ -183,8 +164,6 @@ def test_chained_decode_drives_the_cross_attention_cache() -> None:
 
     assert chained.lazy_tokens.shape == (1,)
     assert chained.caches == [cache]
-    # self-attention advanced by the one decoded token
     assert cache[0][0].offset == self_offset_after_prefill + 1
-    # cross-attention is projected once and then fixed
     assert cache[0][1][0].shape == cross_keys.shape
     assert mx.array_equal(cache[0][1][0], cross_keys)

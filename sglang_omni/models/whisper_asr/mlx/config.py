@@ -1,6 +1,4 @@
 # SPDX-License-Identifier: Apache-2.0
-# Structure follows the Qwen3-ASR MLX path in
-# sglang_omni/models/qwen3_asr/mlx/config.py.
 
 from __future__ import annotations
 
@@ -11,16 +9,10 @@ from typing import Any
 
 @dataclass
 class ModelConfig:
-    """Configuration for the Whisper encoder-decoder model.
-
-    Whisper's Hugging Face config is flat, so a single dataclass covers both
-    the audio encoder and the text decoder. Defaults match
-    openai/whisper-large-v3.
-    """
+    """Whisper encoder-decoder config. Defaults match whisper-large-v3."""
 
     model_type: str = "whisper"
 
-    # Audio encoder
     num_mel_bins: int = 128
     d_model: int = 1280
     encoder_layers: int = 32
@@ -28,7 +20,6 @@ class ModelConfig:
     encoder_ffn_dim: int = 5120
     max_source_positions: int = 1500
 
-    # Text decoder
     decoder_layers: int = 32
     decoder_attention_heads: int = 20
     decoder_ffn_dim: int = 5120

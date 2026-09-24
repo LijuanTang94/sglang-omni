@@ -1,14 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """SGLang MLX runner extension for Whisper.
 
-Whisper is the first encoder-decoder model on this path, so it does not fit
-SGLang's MLX cache discovery: that discovery classifies a layer by looking for
-an attention module exposing ("q_proj", "k_proj", "v_proj", "o_proj",
-"rope"), and Whisper has no RoPE — it uses learned absolute positions — and
-names its output projection out_proj. Discovery therefore finds no layers
-and MlxModelRunner.__init__ rejects the model. Declaring the layout up
-front (see declared_cache_layout) skips the classifier entirely, so
-nothing here has to pretend Whisper has a rotary embedding.
+Whisper has no RoPE and names its output projection out_proj, so SGLang's MLX
+attention discovery finds no layers; the cache layout is declared here instead.
 """
 
 from __future__ import annotations
@@ -29,24 +23,14 @@ _RUNNER_MODULE = "sglang.srt.hardware_backend.mlx.model_runner"
 
 
 def whisper_attention_layout(model: Any) -> tuple[list[Any], list[str]]:
-    """Report the decoder stack as one attention layer per decoder block.
-
-    Each block also owns an encoder_attn, but its keys and values live in
-    the per-layer cross-attention cache rather than in SGLang's KV pool, so the
-    pool only needs to size the self-attention half.
-    """
+    """Report one self-attention layer per block; cross-attention is not pooled."""
     layers = list(model.model.decoder.layers)
     return layers, ["self_attn"] * len(layers)
 
 
 @contextlib.contextmanager
 def declared_cache_layout():
-    """Replace attention discovery for the duration of base __init__.
-
-    patch_model_attention is also disabled: it wraps each discovered
-    attention in MLXAttentionWrapper for batched decode, which assumes the
-    rotary, single-attention-per-layer shape Whisper does not have.
-    """
+    """Replace attention discovery and patching for the duration of base __init__."""
     with (
         mock.patch(
             f"{_RUNNER_MODULE}.find_attention_layers",
@@ -58,24 +42,7 @@ def declared_cache_layout():
 
 
 class WhisperMlxModelRunner(AudioMlxModelRunner):
-    """Whisper support layered on SGLang's native MLX model runner.
-
-    The SGLang base runner keeps ownership of pool sizing and request
-    bookkeeping. AudioMlxModelRunner supplies the audio-item lookup, the
-    tensor conversion and the chained decode step.
-
-    Its prefill does not carry over. That path expects audio to arrive as
-    contiguous placeholder tokens spliced into inputs_embeds through
-    _build_inputs_embeds, which is the decoder-only shape. Whisper is
-    encoder-decoder: the decoder stream holds no placeholders, and the encoder
-    projection lives in the per-layer cross-attention cache instead.
-
-    decode_batch_start is also overridden rather than inherited. The shared
-    version falls back to the batched path for anything it cannot handle, and
-    that path reads caches[i][layer].offset straight off the layer entry —
-    here a CacheList pair, whose shared KV pool has no room for the
-    cross-attention half. Failing loudly beats failing inside the base.
-    """
+    """Whisper encoder-decoder support on SGLang's native MLX model runner."""
 
     model_name = "Whisper"
 
@@ -106,33 +73,17 @@ class WhisperMlxModelRunner(AudioMlxModelRunner):
         )
 
     def _new_native_cache(self) -> list[Any]:  # noqa: leading-underscore
-        """One self-attention cache plus one cross-attention cache per layer.
-
-        The base implementation installs SGLang's pooled attention caches, which
-        hold a single growing KV stream per layer and cannot represent the
-        cross-attention half.
-        """
+        """One self-attention cache plus one cross-attention cache per layer."""
         return self.model.make_cache()
 
     def _first_attention_cache(  # noqa: leading-underscore
         self, cache: list[Any]
     ) -> Any:
-        """Point offset bookkeeping at the self-attention half.
-
-        The base runner reads .offset off the layer's cache entry to learn
-        how many tokens are committed. Here that entry is the CacheList
-        pair, and only its self-attention slot advances per token; the
-        cross-attention slot is written once and stays put.
-        """
+        """Point offset bookkeeping at the self-attention half."""
         return cache[self._cache_layout.first_attention_layer_index][0]
 
     def _release_cache(self, cache: list[Any]) -> None:  # noqa: leading-underscore
-        """Drop the cache instead of pooling it.
-
-        Pool reuse calls reset() on every entry, which a CacheList pair
-        does not implement. Rebuilding is cheap next to a 30 s encode, and the
-        Apple path runs one request at a time.
-        """
+        """Drop the cache instead of pooling it; CacheList has no reset()."""
         del cache
 
     def encoder_token_count(self, req: Any) -> int:
@@ -146,15 +97,7 @@ class WhisperMlxModelRunner(AudioMlxModelRunner):
         return int(count)
 
     def decoder_prompt_ids(self, req: Any, token_ids: list[int]) -> list[int]:
-        """Return the decoder prompt, with any encoder placeholders removed.
-
-        The shared request builder emits [pad] * encoder_token_count ahead
-        of the prompt so the scheduler reserves KV slots for the CUDA path's
-        cross-attention entries. Whether the runner still sees that prefix
-        depends on how the batch was assembled, so accept both shapes: this
-        path holds the encoder projection in its own cross-attention cache, and
-        decoding the placeholders would emit tokens from meaningless positions.
-        """
+        """Strip the encoder pad placeholders from the decoder prompt when present."""
         count = self.encoder_token_count(req)
         pad_token_id = getattr(self.model.config, "pad_token_id", None)
         if (
@@ -168,15 +111,7 @@ class WhisperMlxModelRunner(AudioMlxModelRunner):
         return list(token_ids)
 
     def audio_prefill_inputs(self, req: Any, token_ids: list[int]):
-        """Reject the inherited decoder-only prefill inputs.
-
-        AudioMlxModelRunner builds them by splicing encoder output into
-        inputs_embeds at the audio placeholder positions. Whisper has no
-        placeholders to splice at and no _build_inputs_embeds; its encoder
-        output goes to the cross-attention cache in prefill_start instead.
-        Nothing should reach this, so say why rather than fail on a missing
-        model attribute.
-        """
+        """Whisper prefills through prefill_start, not spliced audio placeholders."""
         raise NotImplementedError(
             "Whisper builds its prefill from the encoder-decoder path in "
             "prefill_start, not from spliced audio placeholders"
@@ -219,8 +154,7 @@ class WhisperMlxModelRunner(AudioMlxModelRunner):
         encoder_hidden_states = self.model.encode(mx.array(self.to_numpy(item.feature)))
 
         cache = self._acquire_cache()
-        # This call is what fills every layer's cross-attention cache; decode
-        # steps after it reach cross-attention with tokens alone.
+        # Fills every layer's cross-attention cache for the decode steps.
         logits = self.model.decode(
             mx.array([prompt_ids], dtype=mx.int32),
             encoder_hidden_states,
@@ -244,13 +178,7 @@ class WhisperMlxModelRunner(AudioMlxModelRunner):
         logprob_spec: Any = None,
         logits_hook: Any = None,
     ):
-        """Decode through the per-request cache rather than the batched path.
-
-        Batched decode reads caches[i][layer].offset directly, but that
-        entry is the CacheList pair here, and its shared KV pool has no
-        room for cross-attention. The single-request path calls the model with
-        its own cache, which is what this model is built for.
-        """
+        """Decode via the per-request cache; the batched pool lacks cross-attention."""
         if (
             len(req_ids) != 1
             or edit_rows is not None

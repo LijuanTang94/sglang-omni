@@ -34,18 +34,12 @@ def _builder(device: str = "mps") -> WhisperASREngineBuilder:
         mem_fraction_static=0.7,
     )
     builder.context_length = 1860
-    # AsrEngineBuilder.build assigns this; set it directly here.
     builder.device = device
     return builder
 
 
 def test_torch_mps_selects_a_non_triton_attention_backend() -> None:
-    """flashinfer is absent on Metal.
-
-    Leaving the default in place fails at import with "name
-    'BatchPrefillWithRaggedKVCacheWrapper' is not defined", and the scheduler's
-    KV-index writer also takes its Triton path.
-    """
+    """flashinfer is absent on Metal."""
     with _torch_mps():
         defaults = _builder().generation_defaults(dtype="float16")
 
@@ -54,11 +48,7 @@ def test_torch_mps_selects_a_non_triton_attention_backend() -> None:
 
 
 def test_torch_mps_bounds_the_kv_pool_to_the_model_context() -> None:
-    """Unified memory over-reports free memory, so the pool needs a hard cap.
-
-    Without it the sizer walks past physical RAM until Metal refuses, which on
-    a 24 GB host meant an unrecoverable OOM mid-request.
-    """
+    """Unified memory over-reports free memory, so the pool needs a hard cap."""
     with _torch_mps():
         defaults = _builder().generation_defaults(dtype="float16")
 
@@ -70,11 +60,7 @@ def test_torch_mps_bounds_the_kv_pool_to_the_model_context() -> None:
 
 
 def test_torch_mps_runner_disables_grad() -> None:
-    """Omni's scheduler loops lack SGLang's @DynamicGradMode().
-
-    Without a guard on the step every request retains its autograd graph, which
-    on Apple Metal is ~4.6 GB of live tensors per request for large-v3.
-    """
+    """Omni's scheduler loops lack SGLang's @DynamicGradMode()."""
     runner = object.__new__(WhisperTorchMpsModelRunner)
     observed: dict[str, bool] = {}
 
@@ -91,12 +77,7 @@ def test_torch_mps_runner_disables_grad() -> None:
 
 
 def test_torch_mps_runner_uses_no_grad_not_inference_mode() -> None:
-    """inference_mode taints its outputs; the sampler mutates these logits.
-
-    The guarded scope reaches the sample-before-post block, so inference_mode
-    would raise "Inplace update to inference tensor outside InferenceMode is
-    not allowed" once sampling runs.
-    """
+    """inference_mode taints its outputs; the sampler mutates these logits."""
     runner = object.__new__(WhisperTorchMpsModelRunner)
 
     def _make_tensor(*args, **kwargs):
@@ -125,12 +106,7 @@ def test_torch_mps_path_builds_its_own_runner() -> None:
 
 
 def test_apple_paths_clamp_concurrency_to_one() -> None:
-    """Both Apple runners decode one request at a time.
-
-    The clamp has to land in adjust_overrides: the stage's own EngineArgs carry
-    the CUDA value of 64 and take precedence over generation_defaults, so a
-    default launch would otherwise reach a runner that cannot serve it.
-    """
+    """Both Apple runners decode one request at a time."""
     overrides = {"max_running_requests": 64, "chunked_prefill_size": 0}
 
     with _torch_mps():

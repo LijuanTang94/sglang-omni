@@ -30,17 +30,12 @@ def _builder(device: str = "mps") -> WhisperASREngineBuilder:
         mem_fraction_static=0.7,
     )
     builder.context_length = 2048
-    # AsrEngineBuilder.build assigns this; set it directly here.
     builder.device = device
     return builder
 
 
 def test_mlx_defaults_disable_radix_and_graphs() -> None:
-    """The encoder output lives in the cross-attention cache, not the KV pool.
-
-    Radix reuse or a split prefill would hand a later chunk a cache that never
-    saw the audio.
-    """
+    """The encoder output lives in the cross-attention cache, not the KV pool."""
     with _backend(mlx=True):
         defaults = _builder().generation_defaults(dtype="float16")
 
@@ -49,8 +44,7 @@ def test_mlx_defaults_disable_radix_and_graphs() -> None:
     assert defaults["enable_torch_compile"] is False
     assert defaults["chunked_prefill_size"] == 0
     assert "sampling_backend" not in defaults
-    # Pinned rather than passed through, so the default launch does not need a
-    # flag; an explicit override still reaches validate_before_infrastructure.
+    # Pinned so the default launch needs no flag.
     assert defaults["max_running_requests"] == 1
 
 
@@ -109,11 +103,7 @@ def test_mlx_uses_the_omni_mlx_scheduler_runner() -> None:
 
 
 def test_mlx_worker_dispatch_accepts_whisper_and_rejects_others() -> None:
-    """create_mlx_model_worker gates on the architecture before doing any work.
-
-    Whisper has to be listed there or the MLX path is unreachable, and the
-    rejection message is what a new model's author reads first.
-    """
+    """create_mlx_model_worker gates on the architecture before doing any work."""
     from sglang_omni.model_runner.mlx_model_worker import create_mlx_model_worker
 
     with pytest.raises(NotImplementedError) as excinfo:
@@ -129,12 +119,7 @@ def test_mlx_worker_dispatch_accepts_whisper_and_rejects_others() -> None:
 
 
 def test_mlx_worker_rejects_before_importing_the_mlx_backend() -> None:
-    """The gate has to run before the MLX imports, not after.
-
-    Those modules are absent on a non-Apple host, so checking afterwards turns a
-    clear NotImplementedError into an ImportError for anyone who passes an
-    unsupported architecture.
-    """
+    """The gate has to run before the MLX imports, not after."""
     import builtins
 
     from sglang_omni.model_runner.mlx_model_worker import create_mlx_model_worker

@@ -45,13 +45,7 @@ def _encoder_graph_builder(**kwargs):
 
 @pytest.fixture(autouse=True)
 def _default_backend(monkeypatch):
-    """Pin the backend so these expectations do not depend on the environment.
-
-    The builder picks the MLX profile when SGLANG_USE_MLX is set, and the
-    Torch/MPS profile when the stage resolves onto a Metal device. Without
-    pinning both, this file reads a different branch on a macOS arm64 developer
-    machine, and a different one again under SGLANG_USE_MLX=1.
-    """
+    """Pin the backend so these expectations do not depend on the environment."""
     import sglang.srt.hardware_backend.mlx.runtime as mlx_runtime
 
     from sglang_omni.models.whisper_asr import engine_builder

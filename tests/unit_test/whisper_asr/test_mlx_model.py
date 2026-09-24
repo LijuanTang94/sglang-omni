@@ -71,9 +71,7 @@ def _hf_config() -> WhisperConfig:
 def _hf_seq2seq() -> HFWhisperForConditionalGeneration:
     torch.manual_seed(0)
     model = HFWhisperForConditionalGeneration(_hf_config()).eval()
-    # Whisper initialises the encoder's embed_positions sinusoidally, which is
-    # symmetric enough that an off-by-one slice can still pass. Randomise it so
-    # the position lookup is actually exercised.
+    # Sinusoidal positions can hide an off-by-one slice; randomise them.
     with torch.no_grad():
         model.model.encoder.embed_positions.weight.copy_(
             torch.randn(POSITIONS, D_MODEL) * 0.05
@@ -114,12 +112,7 @@ def test_encoder_halves_the_frame_count() -> None:
 
 
 def test_encoder_rejects_input_longer_than_the_position_table() -> None:
-    """Over-long input must name the problem, not fail inside a broadcast.
-
-    Slicing embed_positions past its end returns fewer rows rather than raising,
-    so without this guard the failure surfaces as
-    "[broadcast_shapes] Shapes (1,50,64) and (20,64) cannot be broadcast".
-    """
+    """Over-long input must name the problem, not fail inside a broadcast."""
     model = WhisperMlxModel(_tiny_config())
 
     with pytest.raises(ValueError, match="exceeds max_source_positions"):
@@ -199,11 +192,7 @@ def test_decoder_matches_hf_reference() -> None:
 
 
 def test_incremental_decode_matches_full_sequence() -> None:
-    """Stepping one token at a time through the cache must equal one big pass.
-
-    This is what proves the two cache lifetimes are wired correctly: the
-    self-attention cache has to grow while the cross-attention cache stays put.
-    """
+    """Stepping one token at a time through the cache must equal one big pass."""
     hf = _hf_seq2seq()
     model = _loaded_seq2seq(hf)
 
@@ -222,12 +211,7 @@ def test_incremental_decode_matches_full_sequence() -> None:
 
 
 def test_call_decodes_without_the_encoder_output() -> None:
-    """SGLang's MLX runner decodes with model(input_ids, cache=cache).
-
-    It has no encoder output to pass, so once prefill has filled the
-    cross-attention cache the model must decode from tokens alone and give the
-    same answer as passing the encoder states every step.
-    """
+    """SGLang's MLX runner decodes with model(input_ids, cache=cache)."""
     hf = _hf_seq2seq()
     model = _loaded_seq2seq(hf)
     encoded = model.encode(mx.array(torch.randn(1, MELS, POSITIONS * 2).numpy()))

@@ -33,12 +33,7 @@ def _config() -> WhisperConfig:
 
 
 class _UnflattenedAttention(torch.nn.Module):
-    """Stands in for the torch_native backend.
-
-    It allocates its output with empty_like(q), so when the caller passes
-    (tokens, heads, head_dim) the result keeps that rank instead of the
-    (tokens, embed_dim) flashinfer returns.
-    """
+    """Stands in for the torch_native backend."""
 
     def forward(self, q, k, v, forward_batch):
         del k, v, forward_batch

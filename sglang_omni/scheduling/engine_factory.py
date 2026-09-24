@@ -253,13 +253,8 @@ class SGLangGenerationEngineBuilder(ABC):
         return bool(use_mlx())
 
     def uses_torch_mps(self) -> bool:
-        """True when this stage runs Torch on Metal, without the MLX runner.
-
-        Keyed off the resolved device rather than current_platform, which is a
-        process-wide singleton: on macOS arm64 it reports MPS even for a stage
-        explicitly placed on CPU, which would then inherit the Metal-only
-        profile.
-        """
+        """True when this stage runs Torch on Metal, without the MLX runner."""
+        # current_platform is process-wide and reports MPS for CPU stages too.
         return (
             not self.uses_mlx()
             and self.device is not None

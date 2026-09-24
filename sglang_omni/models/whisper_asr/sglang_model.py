@@ -541,6 +541,7 @@ class WhisperForConditionalGeneration(nn.Module):
         **kwargs: Any,
     ) -> Any:
         del kwargs
+
         cross_attention_states = self.batch_precomputed_encoder_states(forward_batch)
         if cross_attention_states is None:
             audio_features, encoder_lens = self.batch_audio_inputs(forward_batch)
